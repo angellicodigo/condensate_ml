@@ -1,0 +1,52 @@
+BROWNIAN-DYNAMICS KF WORKFLOW
+
+1) Create a new folder:
+   mkdir -p ~/torch-kf-epyc1-rubisco-bd
+   cd ~/torch-kf-epyc1-rubisco-bd
+
+2) Save the Python script as:
+   torch_kf_bd_kf_sweep.py
+
+3) Save the LaTeX document as:
+   brownian_kf_model_notes.tex
+
+4) Activate the GPU environment:
+   source ~/miniconda3/etc/profile.d/conda.sh
+   conda activate torch-gpu2
+
+5) Make sure needed packages are installed:
+   pip install pandas matplotlib
+
+6) Check GPUs:
+   nvidia-smi
+   nvidia-smi --query-gpu=index,name,memory.total,memory.free,memory.used,utilization.gpu --format=csv
+
+7) Pick the best GPU and lock to it:
+   export CUDA_VISIBLE_DEVICES=0
+
+8) Run in the foreground once:
+   python torch_kf_bd_kf_sweep.py
+
+9) If it works, run in background:
+   nohup /usr/bin/time -v python torch_kf_bd_kf_sweep.py > bd_kf_run.log 2>&1 &
+
+10) Monitor:
+   tail -f bd_kf_run.log
+   ps aux | grep torch_kf_bd_kf_sweep | grep -v grep
+   watch -n 2 nvidia-smi
+
+11) Outputs:
+   data_bd/*.csv
+   data_bd/*_summary.json
+   traj_bd/*.xyz
+   plots_bd/*.jpeg
+
+12) Download results to your computer:
+   scp -r lanell@mae-cab-lab-server.princeton.edu:~/torch-kf-epyc1-rubisco-bd ~/Desktop/
+
+13) Open OVITO on:
+   traj_bd/set03.xyz
+   Particle types:
+     R = Rubisco
+     S = spacer
+     T = sticker

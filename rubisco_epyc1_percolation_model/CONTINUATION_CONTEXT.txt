@@ -1,0 +1,30 @@
+PROJECT CONTINUATION CONTEXT
+
+User requirement: when updating the model, preserve prior requested functionality rather than removing it.
+
+Core biological abstraction:
+- Rubisco = multivalent scaffold
+- EPYC1 = flexible multivalent linker
+- 24 Rubisco molecules
+- 8 Rubisco patches each
+- 48 EPYC1 chains
+- 12 beads per chain
+- 6 EPYC1 stickers per chain
+- EPYC1:Rubisco = 2:1
+- sticker:patch sites = 1.5:1
+
+Required outputs/workflow:
+- GPU execution
+- two-GPU parameter sweep
+- GSD trajectories
+- XYZ trajectories for OVITO
+- CSV quantitative analysis
+- plots of contacts/bonds, clusters, largest cluster, largest-cluster fraction
+- reproducible parameter files and logs
+
+Current scientific caution:
+- filenames such as nucleation/coarsening are intended regimes, not proof of those regimes.
+- force-based HOOMD version does not have a literal kinetic KOFF.
+- tethered patches are not a true rigid-body or Kern-Frenkel angular patch implementation.
+- publication claims require replicated validation and parameter calibration.
+- differentiability is planned via a PyTorch surrogate trained on simulation outputs, not direct autograd through HOOMD.
