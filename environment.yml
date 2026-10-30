@@ -1,0 +1,13 @@
+name: condenstate_ml
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - numpy
+  - pandas
+  - matplotlib
+  - gsd
+  - hoomd=*=*gpu*
+  - cuda-version=12.6
+  - python-dotenv
+  - pip

@@ -7,6 +7,10 @@ import matplotlib.pyplot as plt
 import gsd.hoomd
 import hoomd
 import hoomd.md as md
+from pathlib import Path
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 
 # ============================================================
@@ -16,8 +20,8 @@ params = json.load(open(sys.argv[1]))
 
 NAME = params["name"]
 BOX = float(params["BOX"])
-KON = float(params["KON"])
-KOFF = float(params["KOFF"])
+KON = float(params.get("KON", params.get("EPS")))
+KOFF = float(params.get("KOFF", 0.0))
 
 SEED = int(params.get("SEED", 42))
 N_STEPS = int(params.get("N_STEPS", 10000))
@@ -50,14 +54,18 @@ CONTACT_CUTOFF = 3.0
 # ============================================================
 # OUTPUT FOLDERS
 # ============================================================
-os.makedirs("traj_patchy_gpu", exist_ok=True)
-os.makedirs("xyz_patchy_gpu", exist_ok=True)
-os.makedirs("data_patchy_gpu", exist_ok=True)
-os.makedirs("plots_patchy_gpu", exist_ok=True)
+output_base = Path(os.environ.get("OUTPUT_DIR"))
+traj_dir = output_base / "traj_patchy_gpu"
+xyz_dir = output_base / "xyz_patchy_gpu"
+data_dir = output_base / "data_patchy_gpu"
+plots_dir = output_base / "plots_patchy_gpu"
 
-GSD_PATH = f"traj_patchy_gpu/{NAME}.gsd"
-XYZ_PATH = f"xyz_patchy_gpu/{NAME}.xyz"
-CSV_PATH = f"data_patchy_gpu/{NAME}.csv"
+for folder in (traj_dir, xyz_dir, data_dir, plots_dir):
+    folder.mkdir(parents=True, exist_ok=True)
+
+GSD_PATH = str(traj_dir / f"{NAME}.gsd")
+XYZ_PATH = str(xyz_dir / f"{NAME}.xyz")
+CSV_PATH = str(data_dir / f"{NAME}.csv")
 
 # ============================================================
 # GPU DEVICE
@@ -434,7 +442,7 @@ if len(df) > 0:
         plt.ylabel(ylabel)
         plt.title(f"{NAME}: {ylabel} vs time")
         plt.tight_layout()
-        plt.savefig(f"plots_patchy_gpu/{NAME}_{key}.jpeg", dpi=180)
+        plt.savefig(plots_dir / f"{NAME}_{key}.jpeg", dpi=180)
         plt.close()
 else:
     print("WARNING: No trajectory frames found — skipping plots")
