@@ -1,13 +1,19 @@
-name: condenstate_ml
+name: condenstate
 channels:
+  - pytorch
   - conda-forge
 dependencies:
   - python>=3.11
+  - git
   - numpy
   - pandas
   - matplotlib
   - gsd
   - hoomd=*=*gpu*
   - cuda-version=12.6
+  - pytorch>=2.1
   - python-dotenv
   - pip
+  - pip:
+      - git+https://github.com/CAB-Lab-Princeton/NEFI.git
+      - marimo
