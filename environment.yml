@@ -1,9 +1,9 @@
-name: condenstate
+name: condensate
 channels:
-  - pytorch
   - conda-forge
+  - nodefaults
 dependencies:
-  - python>=3.11
+  - python>=3.10
   - git
   - numpy
   - pandas
@@ -11,9 +11,10 @@ dependencies:
   - gsd
   - hoomd=*=*gpu*
   - cuda-version=12.6
-  - pytorch>=2.1
   - python-dotenv
   - pip
   - pip:
-      - git+https://github.com/CAB-Lab-Princeton/NEFI.git
-      - marimo
+    - torch
+    - git+https://github.com/CAB-Lab-Princeton/NEFI.git
+    - marimo
+    - manim

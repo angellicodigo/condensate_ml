@@ -31,17 +31,21 @@ DT = float(params.get("DT", 0.0005))
 # ============================================================
 # MODEL PARAMETERS
 # ============================================================
-N_R = 24
-N_C = 48
+N_R = 24 # 24 Rubisco particles
+N_C = 48 # 48 EPYC1 polymers
 
-N_BEADS = 12
+# Each EPYC1 chain has 12 beads. Alternating between stickers and spacers
+N_BEADS = 12 
 STICKER_INDEX = [1, 3, 5, 7, 9, 11]
 
-PATCHES = 8
-PATCH_RADIUS = 2.5
+# Each Rubisco has 8 surface patches that are arranged symmetrically at radius 2.5
+# from the core of the Rubisco
+PATCHES = 8 
+PATCH_RADIUS = 2.5 
 
-CHAIN_K = 10.0
-CHAIN_R0 = 1.2
+# There is a tether from the patch to the core that acts like a spring
+CHAIN_K = 10.0 
+CHAIN_R0 = 1.2 
 
 PATCH_TETHER_K = 50.0
 
@@ -72,7 +76,12 @@ CSV_PATH = str(data_dir / f"{NAME}.csv")
 # ============================================================
 device = hoomd.device.GPU()
 sim = hoomd.Simulation(device=device, seed=SEED)
-
+'''
+R: Rubisco core center.
+P: Rubisco surface patch.
+S: EPYC1 spacer bead.
+T: EPYC1 sticker bead.
+'''
 particle_types = ["R", "P", "S", "T"]
 
 # ============================================================

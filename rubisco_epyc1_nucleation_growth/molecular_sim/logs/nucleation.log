@@ -1,0 +1,6 @@
+Running nucleation: BOX=33.0, epsilon=-1.2, KOFF(recorded)=0.0, DT=0.0005
+Finished simulation: /scratch/network/al5098/simulations/traj_patchy_gpu/nucleation.gsd
+Wrote GSD: /scratch/network/al5098/simulations/traj_patchy_gpu/nucleation.gsd
+Wrote XYZ: /scratch/network/al5098/simulations/xyz_patchy_gpu/nucleation.xyz
+Wrote CSV: /scratch/network/al5098/simulations/data_patchy_gpu/nucleation.csv
+Wrote plots in plots_patchy_gpu/

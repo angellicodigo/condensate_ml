@@ -1,6 +1,8 @@
-# condenstate_ml
+# condensate_ml
 
 ```bash
+ml cudatoolkit/12.6                # If working on a cluster
+export CONDA_OVERRIDE_CUDA="12.6"  # If working on a cluster
 conda env create -f environment.yml
 conda activate condenstate
 ```
