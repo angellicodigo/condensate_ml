@@ -8,138 +8,15 @@ PyTorch gradient checkpointing and continuous autograd differentiability.
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-
-try:
-    from nefi.operators.timestepping import TimeStepper
-    from nefi.errors import OperatorError
-    from nefi.operators.base import Operator
-except ImportError:
-    class OperatorError(RuntimeError):
-        """Fallback operator execution or validation error."""
-        pass
-
-    class Operator(torch.nn.Module):
-        """Fallback NEFI Operator base class."""
-        primary: str = "x"
-        homogeneity: float | None = None
-        batchable: bool = False
-        traceable: bool = True
-
-        def forward(self, fields: Mapping[str, torch.Tensor]) -> torch.Tensor:
-            raise NotImplementedError
-
-        def apply(self, x: torch.Tensor, **others: torch.Tensor) -> torch.Tensor:
-            field_dict = {self.primary: x}
-            field_dict.update(others)
-            return self(field_dict)
-
-        def required_fields(self) -> tuple[str, ...]:
-            return (self.primary,)
-
-    class TimeStepper(Operator):
-        """Fallback NEFI TimeStepper matching the authoritative CAB-Lab specification."""
-        traceable: bool = False
-
-        def __init__(
-            self,
-            step: Any,
-            init: Any,
-            n_steps: int,
-            dt: float,
-            observe: Any = None,
-            *,
-            params: Any = None,
-            field: str = "x",
-            fields: Sequence[str] | None = None,
-            grad_mode: str = "autograd",
-            checkpoint_every: int = 16,
-            homogeneity: float | None = None,
-            native_shape: Sequence[int] | None = None,
-            output_shape: Sequence[int] | None = None,
-        ) -> None:
-            super().__init__()
-            if grad_mode not in ("autograd", "checkpoint"):
-                raise OperatorError(f"grad_mode must be 'autograd' or 'checkpoint', got {grad_mode!r}")
-            if n_steps < 0 or checkpoint_every < 1:
-                raise OperatorError("n_steps must be >= 0 and checkpoint_every >= 1")
-            self.step_fn = step
-            self.init_fn = init
-            self.n_steps = int(n_steps)
-            self.dt = float(dt)
-            self.observe_fn = observe
-            self.params_fn = params
-            self.primary = field
-            self._fields = tuple(fields) if fields is not None else (field,)
-            self.grad_mode = grad_mode
-            self.checkpoint_every = int(checkpoint_every)
-            self.homogeneity = homogeneity
-            self.native_shape = native_shape
-            self._output_shape = output_shape
-
-        def _observe(self, state: tuple, single: bool, n: int) -> torch.Tensor | None:
-            s = state[0] if single else state
-            if self.observe_fn is None:
-                return None
-            return self.observe_fn(s, n)
-
-        def _block(self, n0: int, k: int, single: bool, params: Mapping[str, Any], *state: torch.Tensor):
-            st = tuple(state)
-            obs: list[torch.Tensor] = []
-            for n in range(n0, n0 + k):
-                new = self.step_fn(st[0] if single else st, params, self.dt, n)
-                st = (new,) if torch.is_tensor(new) else tuple(new)
-                o = self._observe(st, single, n + 1)
-                if o is not None:
-                    obs.append(o)
-            return (*st, *obs)
-
-        def forward(self, fields: Mapping[str, torch.Tensor]) -> torch.Tensor:
-            missing = [k for k in self._fields if k not in fields]
-            if missing:
-                raise OperatorError(f"TimeStepper needs fields {missing}; available: {tuple(fields)}")
-            params = dict(self.params_fn(fields)) if self.params_fn is not None else dict(fields)
-            s0 = self.init_fn(fields)
-            single = torch.is_tensor(s0)
-            st = (s0,) if single else tuple(s0)
-            obs: list[torch.Tensor] = []
-            o = self._observe(st, single, 0)
-            if o is not None:
-                obs.append(o)
-            use_ckpt = self.grad_mode == "checkpoint" and torch.is_grad_enabled()
-            n = 0
-            while n < self.n_steps:
-                k = min(self.checkpoint_every if use_ckpt else self.n_steps, self.n_steps - n)
-                if use_ckpt:
-                    out = torch.utils.checkpoint.checkpoint(
-                        self._block, n, k, single, params, *st, use_reentrant=False
-                    )
-                else:
-                    out = self._block(n, k, single, params, *st)
-                st, new_obs = tuple(out[: len(st)]), list(out[len(st) :])
-                obs.extend(new_obs)
-                n += k
-            if self.observe_fn is None:
-                return st[0]
-            if not obs:
-                raise OperatorError("observe() returned None for every step; nothing was measured")
-            shapes = {tuple(t.shape) for t in obs}
-            if len(shapes) > 1:
-                raise OperatorError(
-                    f"observe() returned tensors of different shapes {sorted(shapes)}; return the "
-                    "same shape at every observed step (or None to skip a step)"
-                )
-            return torch.stack(obs)
+from nefi.operators.timestepping import TimeStepper
 
 
 # =============================================================================
