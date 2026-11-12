@@ -1,20 +1,15 @@
 """Differentiable Brownian Dynamics Simulation for Rubisco-EPYC1 Condensates.
 
-Reorganized to match the section layout of simulate_hoomd_patchy_full.py
-while preserving the differentiable PyTorch functionality of
-torch_kf_bd_kf_sweep.py.
-
 Pure helper functions live in the scripts/ package alongside this file:
 
-- scripts/geometry.py   : coordinate wrapping, minimum image displacement
-- scripts/initial_snapshot.py : initial grid layout and initial coordinate snapshot
-- scripts/topology.py           : particle labels, type IDs, mobilities, bond topologies,
-                                  steric parameter matrices
-- scripts/forces.py             : steric repulsion, sticker/patch attraction, bond forces,
-                                  Brownian integration step
+- scripts/geometry.py                 : coordinate wrapping, minimum image, safe norm
+- scripts/initial_snapshot.py         : initial grid layout and coordinate snapshot
+- scripts/topology.py                 : labels, type IDs, mobilities, bond topologies,
+                                        steric parameter matrices, non-bonded pair mask
+- scripts/forces.py                   : steric repulsion, sticker/patch attraction,
+                                        bond forces, Brownian integration step
 - scripts/post_simulation_analysis.py : soft/hard contacts, cluster graph metrics
-- scripts/io.py                 : XYZ export, per-frame metrics, CSV writing, summary JSON,
-                                  diagnostic plots
+- scripts/output_io.py                : XYZ export, per-frame metrics, CSV, summary JSON, plots
 
 Layout (top to bottom, no main()):
   1. Input params (module-level)
@@ -25,11 +20,8 @@ Layout (top to bottom, no main()):
   6. Build initial snapshot
   7. Brownian dynamics
   8. RubiscoEpyc1TimeStepper (TimeStepper subclass)
-  9. GSD output
-  10. Analysis helpers
-  11. Postprocess: CSV, plots
-  12. Run: single simulation
-  13. Module-level execution loop
+  9. Run: simulations
+  10. Module-level execution
 """
 
 from __future__ import annotations
@@ -42,22 +34,19 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 from nefi.operators.timestepping import TimeStepper
 
 from scripts import forces
-from scripts import io
+from scripts import output_io
 from scripts import initial_snapshot
-from scripts import post_simulation_analysis
 from scripts import topology
 
 
 # ============================================================
 # INPUT PARAMS
+# python torch_kf_bd_kf_sweep.py params.json
 # ============================================================
-
-
 if len(sys.argv) < 2:
     raise SystemExit("Usage: python torch_kf_bd_kf_sweep.py params.json")
 
@@ -80,36 +69,10 @@ if not PARAM_LIST:
 if not all(isinstance(run_params, dict) for run_params in PARAM_LIST):
     raise ValueError("Every entry in the parameter list must be a JSON object.")
 
-# Initialize the named input variables from the first run. These are updated
-# for each sweep entry in run_single_simulation() below.
-params = PARAM_LIST[0]
-NAME = str(params.get("name", params.get("NAME", "sim")))
-BOX = float(params.get("BOX", params.get("box", 40.0)))
-KON = float(
-    params.get(
-        "KON",
-        params.get(
-            "EPS",
-            params.get(
-                "kon_or_epsilon",
-                params.get("kon", params.get("eps", 1.0)),
-            ),
-        ),
-    )
-)
-KOFF = float(params.get("KOFF", params.get("koff", 0.0)))
-
-SEED = int(params.get("SEED", params.get("seed", 42)))
-N_STEPS = int(params.get("N_STEPS", params.get("n_steps", 10000)))
-WRITE_EVERY = int(params.get("WRITE_EVERY", params.get("write_every", 100)))
-DT = float(params.get("DT", params.get("dt", 0.0005)))
-
 
 # ============================================================
 # MODEL PARAMETERS
 # ============================================================
-
-
 N_R = 24
 N_C = 48
 N_BEADS = 12
@@ -123,18 +86,19 @@ CHAIN_R0 = 1.2
 
 PATCH_TETHER_K = 50.0
 
-PATCH_EPSILON = -abs(KON)
 PATCH_SIGMA = 1.0
 PATCH_RCUT = 3.0
 
 CONTACT_CUTOFF = 3.0
 
+# Time step shared by every run. Not read from the params JSON.
+DT = 0.0005
+CHECKPOINT_EVERY = 32
+
 
 # ============================================================
 # OUTPUT FOLDERS
 # ============================================================
-
-
 def make_output_dirs(output_base_dir: str, name: str) -> dict[str, str]:
     """Create and return output directory paths (traj, data, plots)."""
     traj_dir = os.path.join(output_base_dir, "traj_bd")
@@ -155,10 +119,8 @@ def make_output_dirs(output_base_dir: str, name: str) -> dict[str, str]:
 
 
 # ============================================================
-# DEVICE
+# GPU DEVICE
 # ============================================================
-
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
@@ -166,8 +128,6 @@ print("Using device:", device)
 # ============================================================
 # PATCH GEOMETRY
 # ============================================================
-
-
 patch_dirs = np.array(
     [
         [1, 1, 1],
@@ -187,7 +147,6 @@ patch_dirs /= np.linalg.norm(patch_dirs, axis=1, keepdims=True)
 # ============================================================
 # BUILD INITIAL SNAPSHOT
 # ============================================================
-
 # wrap_centered_coordinates, apply_minimum_image_displacement,
 # make_grid_positions, generate_initial_coordinates live in
 # scripts/geometry.py and scripts/initial_snapshot.py
@@ -196,7 +155,6 @@ patch_dirs /= np.linalg.norm(patch_dirs, axis=1, keepdims=True)
 # ============================================================
 # BROWNIAN DYNAMICS
 # ============================================================
-
 # compute_gaussian_steric_forces, compute_gaussian_attraction_forces,
 # compute_harmonic_bond_forces, step_brownian_dynamics live in
 # scripts/forces.py
@@ -205,14 +163,10 @@ patch_dirs /= np.linalg.norm(patch_dirs, axis=1, keepdims=True)
 # ============================================================
 # RUBISCO EPYC1 TIMESTEPPER (NEFI TimeStepper subclass)
 # ============================================================
-
-
 class RubiscoEpyc1TimeStepper(TimeStepper):
     """Differentiable Brownian Dynamics TimeStepper for Rubisco-EPYC1 condensates.
 
-    Subclasses NEFI TimeStepper with gradient checkpointing and continuous
-    Gaussian forces. Primary observation: particle trajectory coordinates
-    of shape (T, 792, 3).
+    Primary observation: particle trajectory coordinates of shape (T, n_particles, 3).
     """
 
     traceable: bool = False
@@ -220,18 +174,19 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
     def __init__(
         self,
         n_steps: int,
-        dt: float = 0.0005,
+        dt: float = DT,
         box: float = 40.0,
         write_every: int = 100,
         seed: int = 42,
         grad_mode: str = "checkpoint",
-        checkpoint_every: int = 32,
+        checkpoint_every: int = CHECKPOINT_EVERY,
         field: str = "epsilon",
         fields: Sequence[str] | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
         self.box = float(box)
+        self.patch_dirs = patch_dirs
         self.write_every = int(write_every)
         self.seed = int(seed)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -260,7 +215,12 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
             device=self.device,
         )
         self.mobilities_by_particle = topology.build_mobilities_by_particle(
-            self.n_particles, device=self.device, dtype=self.dtype
+            self.n_rubisco,
+            self.n_patches_per_rubisco,
+            self.n_chains,
+            self.n_beads_per_chain,
+            device=self.device,
+            dtype=self.dtype,
         )
 
         self.bond_pairs_by_type = topology.build_bond_topologies(
@@ -280,6 +240,12 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         self.sigma_steric_matrix = sig_mat
         self.r_cut_steric_matrix = rcut_mat
 
+        # True where a pair interacts sterically: bonded pairs and self-pairs are
+        # False, matching HOOMD's default bond exclusions in the neighbor list.
+        self.nonbonded_pair_mask = topology.build_nonbonded_pair_mask(
+            self.bond_pairs_by_type, self.n_particles, device=self.device
+        )
+
         patch_start = self.n_rubisco
         chain_start = self.n_rubisco + self.n_rubisco * self.n_patches_per_rubisco
         patch_idx_list = list(range(patch_start, chain_start))
@@ -296,9 +262,9 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         self.sticker_indices = torch.tensor(sticker_idx_list, dtype=torch.long, device=self.device)
         self.sticker_chain_ids = torch.tensor(sticker_chain_list, dtype=torch.long, device=self.device)
 
-        patch_rubisco_list = []
-        for p_local in range(len(patch_idx_list)):
-            patch_rubisco_list.append(p_local // self.n_patches_per_rubisco)
+        patch_rubisco_list = [
+            p_local // self.n_patches_per_rubisco for p_local in range(len(patch_idx_list))
+        ]
         self.patch_rubisco_ids = torch.tensor(patch_rubisco_list, dtype=torch.long, device=self.device)
 
         # Preserve the public attribute names used by torch_kf_bd_kf_sweep.py.
@@ -329,11 +295,12 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         )
 
     def init(self, fields: Mapping[str, torch.Tensor]) -> torch.Tensor:
-        """Initializes coordinates of shape (792, 3)."""
+        """Initializes coordinates of shape (n_particles, 3)."""
         if "positions_0" in fields:
             return fields["positions_0"].to(device=self.device, dtype=self.dtype)
         return initial_snapshot.generate_initial_coordinates(
             self.box,
+            self.patch_dirs,
             self.seed,
             self.n_rubisco,
             self.n_patches_per_rubisco,
@@ -366,6 +333,7 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
             self.sigma_steric_matrix,
             self.r_cut_steric_matrix,
             self.box,
+            self.nonbonded_pair_mask,
         )
         f_attract = forces.compute_gaussian_attraction_forces(
             state,
@@ -386,237 +354,51 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         )
 
     def observe(self, state: torch.Tensor, n: int) -> torch.Tensor | None:
-        """Observes coordinates of shape (792, 3) every write_every steps."""
+        """Observes coordinates every write_every steps."""
         if n % self.write_every == 0:
             return state
         return None
 
 
 # ============================================================
-# GSD OUTPUT
+# RUN: SIMULATIONS
 # ============================================================
-
-
-def export_ovito_xyz(
-    filepath: str,
-    trajectory: torch.Tensor,
-    particle_labels: Sequence[str],
-    dt: float,
-    write_every: int,
-) -> None:
-    """Exports multi-frame trajectory to standard OVITO-compatible XYZ format."""
-    io.export_ovito_xyz(filepath, trajectory, particle_labels, dt, write_every)
-
-
-# ============================================================
-# ANALYSIS HELPERS
-# ============================================================
-
-
-def compute_soft_contacts(
-    positions: torch.Tensor,
-    sticker_indices: torch.Tensor,
-    patch_indices: torch.Tensor,
-    box: float,
-    cutoff: float = 3.0,
-    tau: float = 0.1,
-) -> torch.Tensor:
-    """Computes smooth, differentiable sigmoid contact indicators between stickers and patches."""
-    return post_simulation_analysis.compute_soft_contacts(
-        positions, sticker_indices, patch_indices, box, cutoff, tau
-    )
-
-
-def compute_hard_contacts(
-    positions: torch.Tensor,
-    sticker_indices: torch.Tensor,
-    patch_indices: torch.Tensor,
-    box: float,
-    cutoff: float = 3.0,
-) -> torch.Tensor:
-    """Computes exact binary indicator matrix for sticker-patch contacts within cutoff."""
-    return post_simulation_analysis.compute_hard_contacts(
-        positions, sticker_indices, patch_indices, box, cutoff
-    )
-
-
-def compute_cluster_graph_metrics(
-    contacts_binary: torch.Tensor,
-    sticker_chain_ids: torch.Tensor,
-    patch_rubisco_ids: torch.Tensor,
-    n_rubisco: int = N_R,
-    n_chains: int = N_C,
-) -> tuple[int, int, float]:
-    """Computes bipartite connected components over Rubisco complexes and EPYC1 chains."""
-    return post_simulation_analysis.compute_cluster_graph_metrics(
-        contacts_binary, sticker_chain_ids, patch_rubisco_ids, n_rubisco, n_chains
-    )
-
-
-# ============================================================
-# POSTPROCESS: CSV, PLOTS
-# ============================================================
-
-
-def _draw_line_plot_pillow(
-    x: Sequence[float],
-    y: Sequence[float],
-    xlabel: str,
-    ylabel: str,
-    title: str,
-    save_path: str,
-    width: int = 1200,
-    height: int = 800,
-) -> None:
-    """Renders a 2D line plot to JPEG using Pillow with zero C-backend dependencies."""
-    io._draw_line_plot_pillow(x, y, xlabel, ylabel, title, save_path, width, height)
-
-
-def export_csv_and_summary(
-    csv_filepath: str,
-    summary_filepath: str,
-    name: str,
-    box: float,
-    kon: float,
-    epsilon_used: float,
-    koff: float,
-    dt: float,
-    n_steps: int,
-    write_every: int,
-    trajectory: torch.Tensor,
-    sticker_indices: torch.Tensor,
-    patch_indices: torch.Tensor,
-    sticker_chain_ids: torch.Tensor,
-    patch_rubisco_ids: torch.Tensor,
-    n_rubisco: int = N_R,
-    n_chains: int = N_C,
-) -> pd.DataFrame:
-    """Computes contact and graph metrics, writing HOOMD-format CSV and summary JSON."""
-    csv_dir = os.path.dirname(os.path.abspath(csv_filepath))
-    if csv_dir:
-        os.makedirs(csv_dir, exist_ok=True)
-    summary_dir = os.path.dirname(os.path.abspath(summary_filepath))
-    if summary_dir:
-        os.makedirs(summary_dir, exist_ok=True)
-
-    records = []
-    n_frames = trajectory.shape[0]
-
-    for frame_idx in range(n_frames):
-        step = frame_idx * write_every
-        sim_time = step * dt
-        pos_frame = trajectory[frame_idx]
-
-        contacts_binary = compute_hard_contacts(
-            pos_frame, sticker_indices, patch_indices, box, cutoff=CONTACT_CUTOFF
-        )
-        n_contacts = int(contacts_binary.sum().item())
-        n_clusters, largest_size, fraction = compute_cluster_graph_metrics(
-            contacts_binary, sticker_chain_ids, patch_rubisco_ids, n_rubisco, n_chains
-        )
-
-        records.append(
-            {
-                "frame": frame_idx,
-                "step": step,
-                "time": sim_time,
-                "box": box,
-                "kon_or_epsilon": kon,
-                "epsilon_used": epsilon_used,
-                "koff_recorded": koff,
-                "contacts": n_contacts,
-                "bonds": n_contacts,
-                "clusters": n_clusters,
-                "largest": largest_size,
-                "fraction": fraction,
-            }
-        )
-
-    df = pd.DataFrame(records)
-    df.to_csv(csv_filepath, index=False)
-
-    final_contacts = int(df["contacts"].iloc[-1]) if len(df) > 0 else 0
-    final_clusters = int(df["clusters"].iloc[-1]) if len(df) > 0 else (n_rubisco + n_chains)
-    final_largest = int(df["largest"].iloc[-1]) if len(df) > 0 else 1
-    final_fraction = float(df["fraction"].iloc[-1]) if len(df) > 0 else 1.0 / (n_rubisco + n_chains)
-
-    summary = {
-        "name": name,
-        "box": box,
-        "kon": kon,
-        "epsilon_used": epsilon_used,
-        "dt": dt,
-        "n_steps": n_steps,
-        "frames_written": len(records),
-        "final_contacts": final_contacts,
-        "final_clusters": final_clusters,
-        "final_largest_cluster": final_largest,
-        "final_fraction": final_fraction,
-    }
-
-    with open(summary_filepath, "w") as fh:
-        json.dump(summary, fh, indent=2)
-
-    return df
-
-
-def export_diagnostic_plots(df: pd.DataFrame, plots_dir: str, name: str) -> None:
-    """Generates 4 time-series JPEG plots matching HOOMD reference outputs."""
-    io.generate_all_diagnostic_plots(df, plots_dir, name)
-
-
-# ============================================================
-# RUN
-# ============================================================
+def _get_param(run_params: Mapping[str, Any], keys: Sequence[str], default: Any) -> Any:
+    """Return the value of the first key in ``keys`` present in run_params, else default."""
+    for key in keys:
+        if key in run_params:
+            return run_params[key]
+    return default
 
 
 def run_single_simulation(
-    params_by_field: Mapping[str, Any],
+    run_params: Mapping[str, Any],
     device: torch.device,
     output_base_dir: str = ".",
 ) -> dict[str, Any]:
-    """Runs a complete simulation workflow for a single parameter configuration."""
-    name = str(params_by_field.get("name", params_by_field.get("NAME", "sim")))
-    box = float(params_by_field.get("BOX", params_by_field.get("box", 40.0)))
-    kon = float(
-        params_by_field.get(
-            "KON",
-            params_by_field.get(
-                "EPS",
-                params_by_field.get(
-                    "kon_or_epsilon",
-                    params_by_field.get("kon", params_by_field.get("eps", 1.0)),
-                ),
-            ),
-        )
-    )
-    koff = float(params_by_field.get("KOFF", params_by_field.get("koff", 0.0)))
-    seed = int(params_by_field.get("SEED", params_by_field.get("seed", 42)))
-    n_steps = int(params_by_field.get("N_STEPS", params_by_field.get("n_steps", 10000)))
-    write_every = int(params_by_field.get("WRITE_EVERY", params_by_field.get("write_every", 100)))
-    dt = float(params_by_field.get("DT", params_by_field.get("dt", 0.0005)))
+    """Runs a complete simulation workflow for one parameter configuration.
 
-    global NAME, BOX, KON, KOFF, SEED, N_STEPS, WRITE_EVERY, DT, PATCH_EPSILON
-    NAME = name
-    BOX = box
-    KON = kon
-    KOFF = koff
-    SEED = seed
-    N_STEPS = n_steps
-    WRITE_EVERY = write_every
-    DT = dt
-    PATCH_EPSILON = -abs(KON)
-    epsilon_used = PATCH_EPSILON
+    Uses the module constant DT; no module-level state is modified.
+    """
+    name = str(_get_param(run_params, ("name", "NAME"), "sim"))
+    box = float(_get_param(run_params, ("BOX", "box"), 40.0))
+    kon = float(_get_param(run_params, ("KON", "EPS", "kon_or_epsilon", "kon", "eps"), 1.0))
+    koff = float(_get_param(run_params, ("KOFF", "koff"), 0.0))
+    seed = int(_get_param(run_params, ("SEED", "seed"), 42))
+    n_steps = int(_get_param(run_params, ("N_STEPS", "n_steps"), 10000))
+    write_every = int(_get_param(run_params, ("WRITE_EVERY", "write_every"), 100))
+
+    requested_dt = _get_param(run_params, ("DT", "dt"), None)
+    if requested_dt is not None and float(requested_dt) != DT:
+        print(f"WARNING [{name}]: ignoring dt={requested_dt}; all runs use DT={DT}.")
+
+    epsilon_used = -abs(kon)
 
     dirs = make_output_dirs(output_base_dir, name)
-    xyz_path = dirs["xyz"]
-    csv_path = dirs["csv"]
-    summary_path = dirs["summary"]
-    plots_dir = dirs["plots"]
 
     print(
         f"\nStarting {name}: BOX={box:.1f}, KON={kon:.3f}, epsilon_used={epsilon_used:.3f}, "
-        f"KOFF={koff:.3f}, N_STEPS={n_steps}, WRITE_EVERY={write_every}, DT={dt:.5f}"
+        f"KOFF={koff:.3f}, N_STEPS={n_steps}, WRITE_EVERY={write_every}, DT={DT:.5f}"
     )
     t0 = time.time()
 
@@ -625,12 +407,12 @@ def run_single_simulation(
 
     stepper = RubiscoEpyc1TimeStepper(
         n_steps=n_steps,
-        dt=dt,
+        dt=DT,
         box=box,
         write_every=write_every,
         seed=seed,
         grad_mode="checkpoint",
-        checkpoint_every=32,
+        checkpoint_every=CHECKPOINT_EVERY,
         field="epsilon",
         device=device,
     )
@@ -642,16 +424,24 @@ def run_single_simulation(
     elapsed = time.time() - t0
     print(f"Simulation completed in {elapsed:.2f} s. Exporting results...")
 
-    export_ovito_xyz(xyz_path, trajectory, stepper.particle_labels, dt, write_every)
-    df = export_csv_and_summary(
-        csv_path,
-        summary_path,
+    # The CSV assumes frame 0 is step 0 and frame i is step i * write_every.
+    expected_frames = n_steps // write_every
+    if trajectory.shape[0] not in (expected_frames, expected_frames + 1):
+        print(
+            f"WARNING [{name}]: got {trajectory.shape[0]} frames, expected "
+            f"{expected_frames} or {expected_frames + 1}; check the step/frame mapping."
+        )
+
+    output_io.export_ovito_xyz(dirs["xyz"], trajectory, stepper.particle_labels, DT, write_every)
+    df = output_io.export_csv_and_summary(
+        dirs["csv"],
+        dirs["summary"],
         name,
         box,
         kon,
         epsilon_used,
         koff,
-        dt,
+        DT,
         n_steps,
         write_every,
         trajectory,
@@ -661,26 +451,46 @@ def run_single_simulation(
         stepper.patch_rubisco_ids,
         stepper.n_rubisco,
         stepper.n_chains,
+        CONTACT_CUTOFF,
     )
-    export_diagnostic_plots(df, plots_dir, name)
+    output_io.generate_all_diagnostic_plots(df, dirs["plots"], name)
 
-    print(f"Wrote XYZ: {xyz_path}")
-    print(f"Wrote CSV: {csv_path}")
-    print(f"Wrote Summary: {summary_path}")
-    print(f"Wrote Plots in {plots_dir}")
+    print(f"Wrote XYZ: {dirs['xyz']}")
+    print(f"Wrote CSV: {dirs['csv']}")
+    print(f"Wrote Summary: {dirs['summary']}")
+    print(f"Wrote Plots in {dirs['plots']}")
 
     return {
         "name": name,
         "elapsed_seconds": elapsed,
         "final_contacts": int(df["contacts"].iloc[-1]) if len(df) > 0 else 0,
-        "final_clusters": int(df["clusters"].iloc[-1]) if len(df) > 0 else 72,
+        "final_clusters": (
+            int(df["clusters"].iloc[-1]) if len(df) > 0 else stepper.n_rubisco + stepper.n_chains
+        ),
     }
 
 
-# Execute the supplied configuration(s) from top to bottom. A single JSON
-# object runs once; a JSON list runs a sweep in list order.
+def run_simulation(
+    params_list: Sequence[Mapping[str, Any]],
+    device: torch.device,
+    output_base_dir: str = ".",
+) -> list[dict[str, Any]]:
+    """Runs every configuration in params_list in order and returns one result dict per run."""
+    names = [str(_get_param(p, ("name", "NAME"), "sim")) for p in params_list]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(f"Run names must be unique (outputs would be overwritten): {duplicates}")
+
+    results = []
+    for run_params in params_list:
+        results.append(run_single_simulation(run_params, device, output_base_dir))
+    return results
+
+
+# ============================================================
+# RUN
+# ============================================================
 print(f"Rubisco-EPYC1 Differentiable Brownian Dynamics. Device: {device}")
 print(f"Found {len(PARAM_LIST)} simulation run(s) to execute.")
-for run_params in PARAM_LIST:
-    run_single_simulation(run_params, device)
+run_simulation(PARAM_LIST, device)
 print("\nAll simulations completed successfully.")

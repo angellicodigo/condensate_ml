@@ -24,6 +24,7 @@ def make_grid_positions(n: int, box: float, margin: float = 6.0) -> np.ndarray:
 
 def generate_initial_coordinates(
     box: float,
+    patch_dirs: np.ndarray,
     seed: int = 42,
     n_rubisco: int = 24,
     n_patches_per_rubisco: int = 8,
@@ -54,21 +55,6 @@ def generate_initial_coordinates(
     # ------------------------------------------------------------------
     # 1. Rubisco centers on a jittered grid
     # ------------------------------------------------------------------
-    patch_dirs = np.array(
-        [
-            [1, 1, 1],
-            [1, 1, -1],
-            [1, -1, 1],
-            [1, -1, -1],
-            [-1, 1, 1],
-            [-1, 1, -1],
-            [-1, -1, 1],
-            [-1, -1, -1],
-        ],
-        dtype=float,
-    )
-    patch_dirs /= np.linalg.norm(patch_dirs, axis=1, keepdims=True)
-
     rubisco_centers = make_grid_positions(n_rubisco, box, margin=7.0)
     rubisco_centers += rng.normal(scale=0.20, size=rubisco_centers.shape)
     rubisco_centers = ((rubisco_centers + box / 2.0) % box) - box / 2.0

@@ -35,7 +35,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from rubisco_epyc1_nucleation_growth.torch_sim.torch_kf_bd_kf_sweep import (
+from rubisco_epyc1_nucleation_growth.torch_sim.torch_kf_bd_kf_sweep_reformat import (
     RubiscoEpyc1TimeStepper,
     compute_harmonic_bond_forces,
     compute_gaussian_steric_forces,

@@ -236,6 +236,75 @@ def create_single_diagnostic_plot(
     )
 
 
+def export_csv_and_summary(
+    csv_filepath: str,
+    summary_filepath: str,
+    name: str,
+    box: float,
+    kon: float,
+    epsilon_used: float,
+    koff: float,
+    dt: float,
+    n_steps: int,
+    write_every: int,
+    trajectory: torch.Tensor,
+    sticker_indices: torch.Tensor,
+    patch_indices: torch.Tensor,
+    sticker_chain_ids: torch.Tensor,
+    patch_rubisco_ids: torch.Tensor,
+    n_rubisco: int = 24,
+    n_chains: int = 48,
+) -> pd.DataFrame:
+    """Compute per-frame metrics and write CSV plus summary JSON.
+
+    Thin orchestration wrapper: compute per-frame metrics, write CSV,
+    compile the summary dict, write summary JSON, return the DataFrame.
+    """
+    csv_dir = os.path.dirname(os.path.abspath(csv_filepath))
+    if csv_dir:
+        os.makedirs(csv_dir, exist_ok=True)
+    summary_dir = os.path.dirname(os.path.abspath(summary_filepath))
+    if summary_dir:
+        os.makedirs(summary_dir, exist_ok=True)
+
+    records = []
+    n_frames = trajectory.shape[0]
+
+    for frame_idx in range(n_frames):
+        step = frame_idx * write_every
+        sim_time = step * dt
+        pos_frame = trajectory[frame_idx]
+
+        record = compute_frame_metrics(
+            pos_frame,
+            sticker_indices,
+            patch_indices,
+            sticker_chain_ids,
+            patch_rubisco_ids,
+            box,
+            step,
+            sim_time,
+            frame_idx,
+            name,
+            kon,
+            epsilon_used,
+            koff,
+            n_rubisco,
+            n_chains,
+        )
+        records.append(record)
+
+    write_csv_file(csv_filepath, records)
+    df = pd.DataFrame(records)
+
+    summary = compile_simulation_summary(
+        name, box, kon, epsilon_used, koff, dt, n_steps, df, n_rubisco, n_chains
+    )
+    write_summary_json(summary_filepath, summary)
+
+    return df
+
+
 def generate_all_diagnostic_plots(df: pd.DataFrame, plots_dir: str, name: str) -> None:
     """Generate 4 time-series diagnostic JPEG plots matching HOOMD reference outputs."""
     if plots_dir:
