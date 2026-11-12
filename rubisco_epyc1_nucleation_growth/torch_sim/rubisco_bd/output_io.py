@@ -15,7 +15,12 @@ import pandas as pd
 import torch
 
 from .geometry import apply_minimum_image_displacement
-from .post_simulation_analysis import compute_cluster_graph_metrics, compute_hard_contacts
+from .constants import CONTACT_CUTOFF
+from .post_simulation_analysis import (  # noqa: F401  (re-exported for callers)
+    compute_cluster_graph_metrics,
+    compute_frame_metrics,
+    compute_hard_contacts,
+)
 
 
 def export_ovito_xyz(
@@ -45,51 +50,6 @@ def export_ovito_xyz(
             coords = traj_cpu[frame_idx]
             for label, pos in zip(particle_labels, coords):
                 fh.write(f"{label} {pos[0]:.6f} {pos[1]:.6f} {pos[2]:.6f}\n")
-
-
-def compute_frame_metrics(
-    pos_frame: torch.Tensor,
-    sticker_indices: torch.Tensor,
-    patch_indices: torch.Tensor,
-    sticker_chain_ids: torch.Tensor,
-    patch_rubisco_ids: torch.Tensor,
-    box: float,
-    step: int,
-    sim_time: float,
-    frame_idx: int,
-    name: str,
-    kon: float,
-    epsilon_used: float,
-    koff: float,
-    n_rubisco: int,
-    n_chains: int,
-) -> dict:
-    """Compute contact and cluster metrics for a single trajectory frame.
-
-    Returns a dict with all columns needed for the CSV output.
-    """
-    contacts_binary = compute_hard_contacts(
-        pos_frame, sticker_indices, patch_indices, box, cutoff=3.0
-    )
-    n_contacts = int(contacts_binary.sum().item())
-    n_clusters, largest_size, fraction = compute_cluster_graph_metrics(
-        contacts_binary, sticker_chain_ids, patch_rubisco_ids, n_rubisco, n_chains
-    )
-
-    return {
-        "frame": frame_idx,
-        "step": step,
-        "time": sim_time,
-        "box": box,
-        "kon_or_epsilon": kon,
-        "epsilon_used": epsilon_used,
-        "koff_recorded": koff,
-        "contacts": n_contacts,
-        "bonds": n_contacts,
-        "clusters": n_clusters,
-        "largest": largest_size,
-        "fraction": fraction,
-    }
 
 
 def write_csv_file(csv_filepath: str, records: list[dict]) -> None:
@@ -254,6 +214,7 @@ def export_csv_and_summary(
     patch_rubisco_ids: torch.Tensor,
     n_rubisco: int = 24,
     n_chains: int = 48,
+    contact_cutoff: float = CONTACT_CUTOFF,
 ) -> pd.DataFrame:
     """Compute per-frame metrics and write CSV plus summary JSON.
 
@@ -291,6 +252,7 @@ def export_csv_and_summary(
             koff,
             n_rubisco,
             n_chains,
+            contact_cutoff,
         )
         records.append(record)
 

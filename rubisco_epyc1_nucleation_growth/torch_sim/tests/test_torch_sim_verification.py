@@ -32,10 +32,11 @@ import numpy as np
 import pandas as pd
 import torch
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+# tests/ -> torch_sim/ (contains the rubisco_bd package and the sweep CLI)
+TORCH_SIM_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TORCH_SIM_DIR))
 
-from rubisco_epyc1_nucleation_growth.torch_sim.torch_kf_bd_kf_sweep_reformat import (
+from rubisco_bd import (
     RubiscoEpyc1TimeStepper,
     compute_harmonic_bond_forces,
     compute_gaussian_steric_forces,
@@ -46,8 +47,8 @@ from rubisco_epyc1_nucleation_growth.torch_sim.torch_kf_bd_kf_sweep_reformat imp
 )
 
 PYTHON_EXE = sys.executable
-SIM_SCRIPT_PATH = REPO_ROOT / "rubisco_epyc1_nucleation_growth" / "torch_sim" / "torch_kf_bd_kf_sweep.py"
-PARAMS_JSON_PATH = REPO_ROOT / "rubisco_epyc1_nucleation_growth" / "torch_sim" / "params.json"
+SIM_SCRIPT_PATH = TORCH_SIM_DIR / "torch_kf_bd_kf_sweep_reformat.py"
+PARAMS_JSON_PATH = TORCH_SIM_DIR / "params.json"
 
 EXPECTED_HOOMD_COLUMNS: list[str] = [
     "frame",
@@ -523,9 +524,11 @@ class TestEndToEndParamsExecution(unittest.TestCase):
                 json.dump(scaled_params_list, fh)
 
             cmd = [PYTHON_EXE, str(SIM_SCRIPT_PATH), str(temp_params_file)]
+            env = dict(os.environ, PYTHONPATH=str(TORCH_SIM_DIR) + os.pathsep + os.environ.get("PYTHONPATH", ""))
             proc = subprocess.run(
                 cmd,
                 cwd=tmpdir,
+                env=env,
                 capture_output=True,
                 text=True,
                 check=False,
