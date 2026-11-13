@@ -1,6 +1,6 @@
 """Run complete simulation workflows (rollout + XYZ/CSV/summary/plots) and the CLI.
 
-Nothing here executes at import time. Use ``python -m rubisco_bd.runner params.json`` or
+Nothing here executes at import time. Use ``python -m condensate_ml.runner params.json`` or
 the thin wrapper ``torch_kf_bd_kf_sweep_reformat.py``.
 """
 

@@ -2,7 +2,7 @@
 
 Importing this module has no side effects. Typical use from an ML training script::
 
-    from rubisco_bd import RubiscoEpyc1TimeStepper
+    from condensate_ml import RubiscoEpyc1TimeStepper
 
     stepper = RubiscoEpyc1TimeStepper(n_steps=2000, box=35.0, write_every=100,
                                       seed=0, device=device)

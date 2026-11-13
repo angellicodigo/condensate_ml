@@ -148,7 +148,7 @@ strings, and process substitution.
 4. PROGRAMMATIC PYTORCH / NEFI USAGE EXAMPLE
 --------------------------------------------------------------------------------
 
-The simulator lives in the importable `rubisco_bd` package (no side effects on import).
+The simulator lives in the importable `condensate_ml` package (no side effects on import).
 Install it once so ML code anywhere can use it:
 
    pip install -e rubisco_epyc1_nucleation_growth/torch_sim
@@ -158,7 +158,7 @@ Negative = attractive (-|KON| in the HOOMD script). A positive value is repulsiv
 
 ```python
 import torch
-from rubisco_bd import RubiscoEpyc1TimeStepper, compute_soft_contacts
+from condensate_ml import RubiscoEpyc1TimeStepper, compute_soft_contacts
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 box = 35.0

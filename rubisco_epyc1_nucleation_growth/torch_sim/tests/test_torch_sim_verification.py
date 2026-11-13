@@ -32,11 +32,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-# tests/ -> torch_sim/ (contains the rubisco_bd package and the sweep CLI)
+# tests/ -> torch_sim/ (contains scripts/ and the sweep CLI).
+# Requires `pip install -e .` from torch_sim/ so that `condensate_ml` resolves to scripts/.
 TORCH_SIM_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TORCH_SIM_DIR))
 
-from rubisco_bd import (
+from condensate_ml import (
     RubiscoEpyc1TimeStepper,
     compute_harmonic_bond_forces,
     compute_gaussian_steric_forces,
