@@ -71,29 +71,29 @@ The simulation replicates the physical topology of simulate_hoomd_patchy_full.py
     (grad_mode="checkpoint"), enabling exact adjoint backpropagation.
 
 --------------------------------------------------------------------------------
-3. RUNNING SIMULATION SWEEPS VIA CLI (torch_kf_bd_kf_sweep.py)
+3. RUNNING SIMULATION SWEEPS VIA CLI (torch_kf_bd_kf_sweep_reformat.py)
 --------------------------------------------------------------------------------
 
-The script `torch_kf_bd_kf_sweep.py` supports JSON parameter files, inline JSON
+The script `torch_kf_bd_kf_sweep_reformat.py` supports JSON parameter files, inline JSON
 strings, and process substitution.
 
 3.1 Run All Conditions from params.json:
    # Sequentially executes all conditions defined in params.json
    cd rubisco_epyc1_nucleation_growth/torch_sim
-   python torch_kf_bd_kf_sweep.py params.json
+   python torch_kf_bd_kf_sweep_reformat.py params.json
 
 3.2 Run a Single Condition via Inline JSON String:
    # Linux / macOS / Bash:
-   python torch_kf_bd_kf_sweep.py '{"name": "test_run", "BOX": 35.0, "EPS": 1.2, "N_STEPS": 50000, "WRITE_EVERY": 500, "SEED": 42}'
+   python torch_kf_bd_kf_sweep_reformat.py '{"name": "test_run", "BOX": 35.0, "EPS": 1.2, "N_STEPS": 50000, "WRITE_EVERY": 500, "SEED": 42}'
 
    # Windows PowerShell (escape inner double quotes with backslashes):
-   python torch_kf_bd_kf_sweep.py '{\"name\": \"test_run\", \"BOX\": 35.0, \"EPS\": 1.2, \"N_STEPS\": 50000, \"WRITE_EVERY\": 500, \"SEED\": 42}'
+   python torch_kf_bd_kf_sweep_reformat.py '{\"name\": \"test_run\", \"BOX\": 35.0, \"EPS\": 1.2, \"N_STEPS\": 50000, \"WRITE_EVERY\": 500, \"SEED\": 42}'
 
 3.3 Run via Bash Process Substitution:
-   python torch_kf_bd_kf_sweep.py <(echo '{"name": "coarsening", "BOX": 29.0, "EPS": 2.5, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 105}')
+   python torch_kf_bd_kf_sweep_reformat.py <(echo '{"name": "coarsening", "BOX": 29.0, "EPS": 2.5, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 105}')
 
 3.4 Background Execution with nohup:
-   nohup python torch_kf_bd_kf_sweep.py params.json > bd_kf_sweep.log 2>&1 &
+   nohup python torch_kf_bd_kf_sweep_reformat.py params.json > bd_kf_sweep.log 2>&1 &
    tail -f bd_kf_sweep.log
 
 3.5 Multi-GPU Parallel Sweep (Bash):
@@ -106,7 +106,7 @@ strings, and process substitution.
    jq -c '.[]' params.json | while read -r row; do
        gpu_id=$(( idx % GPU_COUNT ))
        echo "Dispatching condition on GPU ${gpu_id}: ${row}"
-       CUDA_VISIBLE_DEVICES=${gpu_id} python torch_kf_bd_kf_sweep.py <(echo "${row}") > "data_bd/run_${idx}.log" 2>&1 &
+       CUDA_VISIBLE_DEVICES=${gpu_id} python torch_kf_bd_kf_sweep_reformat.py <(echo "${row}") > "data_bd/run_${idx}.log" 2>&1 &
        idx=$(( idx + 1 ))
    done
    wait
@@ -125,7 +125,7 @@ strings, and process substitution.
    from concurrent.futures import ProcessPoolExecutor
 
    def run_condition(cond: dict) -> None:
-       cmd = ["python", "torch_kf_bd_kf_sweep.py", json.dumps(cond)]
+       cmd = ["python", "torch_kf_bd_kf_sweep_reformat.py", json.dumps(cond)]
        subprocess.run(cmd, check=True)
 
    def main() -> None:
@@ -142,104 +142,47 @@ strings, and process substitution.
    # Option B: Inline execution via ThreadPoolExecutor (cross-platform):
    # (Because worker tasks launch independent subprocesses, ThreadPoolExecutor
    # avoids multiprocessing spawn/pickling restrictions on Windows and macOS):
-   python -c "import json, subprocess; from concurrent.futures import ThreadPoolExecutor; conditions = json.load(open('params.json')); list(ThreadPoolExecutor(max_workers=4).map(lambda c: subprocess.run(['python', 'torch_kf_bd_kf_sweep.py', json.dumps(c)], check=True), conditions))"
+   python -c "import json, subprocess; from concurrent.futures import ThreadPoolExecutor; conditions = json.load(open('params.json')); list(ThreadPoolExecutor(max_workers=4).map(lambda c: subprocess.run(['python', 'torch_kf_bd_kf_sweep_reformat.py', json.dumps(c)], check=True), conditions))"
 
 --------------------------------------------------------------------------------
 4. PROGRAMMATIC PYTORCH / NEFI USAGE EXAMPLE
 --------------------------------------------------------------------------------
 
-The following example demonstrates how to import `RubiscoEpyc1TimeStepper`,
-execute a forward rollout, compute differentiable soft contacts, and compute
-gradients with respect to physical interaction parameters (e.g., epsilon)
-using NEFI's checkpointed adjoint time-stepper.
+The simulator lives in the importable `condensate_ml` package (no side effects on import).
+Install it once so ML code anywhere can use it:
+
+   pip install -e rubisco_epyc1_nucleation_growth/torch_sim
+
+SIGN CONVENTION: the stepper's "epsilon" field is the SIGNED Gaussian well depth.
+Negative = attractive (-|KON| in the HOOMD script). A positive value is repulsive.
 
 ```python
-from typing import Any
 import torch
-from torch_kf_bd_kf_sweep import (
-    RubiscoEpyc1TimeStepper,
-    compute_soft_contacts,
+from condensate_ml import RubiscoEpyc1TimeStepper, compute_soft_contacts
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+box = 35.0
+
+stepper = RubiscoEpyc1TimeStepper(
+    n_steps=2000, box=box, write_every=100, seed=42,
+    grad_mode="checkpoint", checkpoint_every=32, device=device,
 )
 
-def compute_differentiable_trajectory_loss(
-    trajectoryPositions: torch.Tensor,
-    box: float,
-    cutoff: float = 3.0,
-    tau: float = 0.1,
-    targetContacts: float = 300.0,
-) -> torch.Tensor:
-    """Compute differentiable squared error loss between soft contacts and target."""
-    finalFramePositions = trajectoryPositions[-1]
-    softContactMatrix = compute_soft_contacts(
-        finalFramePositions,
-        box=box,
-        cutoff=cutoff,
-        tau=tau,
-    )
-    totalSoftContacts = softContactMatrix.sum()
-    targetTensor = torch.tensor(
-        targetContacts,
-        dtype=trajectoryPositions.dtype,
-        device=trajectoryPositions.device,
-    )
-    return (totalSoftContacts - targetTensor) ** 2
+epsilon = torch.tensor(-1.5, device=device, requires_grad=True)   # e.g. -softplus(net(x))
+torch.manual_seed(0)                                              # noise is drawn per step
+trajectory = stepper({"epsilon": epsilon})                        # (T, 792, 3)
 
-def execute_simulation_optimization_step(
-    stepper: RubiscoEpyc1TimeStepper,
-    paramsByField: dict[str, Any],
-    epsilon: torch.Tensor,
-    targetContacts: float = 300.0,
-) -> dict[str, float]:
-    """Execute forward simulation rollout, calculate loss, and evaluate gradients."""
-    trajectoryPositions = stepper(paramsByField)
-    loss = compute_differentiable_trajectory_loss(
-        trajectoryPositions=trajectoryPositions,
-        box=float(paramsByField["box"]),
-        targetContacts=targetContacts,
-    )
-    loss.backward()
-    return {
-        "loss": float(loss.item()),
-        "epsilonGrad": float(epsilon.grad.item()),
-    }
-
-def run_differentiable_simulation_step(
-    device: torch.device | None = None,
-    initialEpsilon: float = 1.5,
-) -> dict[str, float]:
-    """Configure device and parameters, execute step, and display results."""
-    targetDevice = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    epsilon = torch.tensor(initialEpsilon, dtype=torch.float32, device=targetDevice, requires_grad=True)
-
-    paramsByField: dict[str, Any] = {
-        "name": "differentiable_run",
-        "box": 35.0,
-        "kon_or_epsilon": epsilon,
-        "n_steps": 2000,
-        "write_every": 100,
-        "dt": 0.0005,
-        "seed": 42,
-    }
-
-    stepper = RubiscoEpyc1TimeStepper(
-        grad_mode="checkpoint",
-        checkpoint_every=32,
-        device=targetDevice,
-    )
-
-    metricsByName = execute_simulation_optimization_step(
-        stepper=stepper,
-        paramsByField=paramsByField,
-        epsilon=epsilon,
-    )
-
-    print(f"Loss: {metricsByName['loss']:.4f}")
-    print(f"Epsilon gradient (dLoss/dEpsilon): {metricsByName['epsilonGrad']:.6f}")
-    return metricsByName
-
-if __name__ == "__main__":
-    run_differentiable_simulation_step()
+soft = compute_soft_contacts(                                     # (T, 288, 192)
+    trajectory, stepper.sticker_indices, stepper.patch_indices,
+    box=box, cutoff=3.0, tau=0.1,
+)
+loss = (soft.sum(dim=(-1, -2)).mean() - 300.0) ** 2
+loss.backward()
+print(loss.item(), epsilon.grad.item())
 ```
+
+Hard (HOOMD-parity) contacts/clusters, via compute_hard_contacts and
+compute_cluster_graph_metrics, are not differentiable; use them for evaluation only.
 
 --------------------------------------------------------------------------------
 5. OUTPUT ARTIFACTS & DATA SCHEMAS
