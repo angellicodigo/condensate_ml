@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rubisco-bd"
+version = "0.1.0"
+description = "Differentiable Rubisco-EPYC1 patchy Brownian Dynamics (PyTorch / NEFI TimeStepper)"
+requires-python = ">=3.10"
+dependencies = ["torch", "numpy", "pandas", "pillow"]
+# NEFI is installed from GitHub (see environment.yml):
+#   pip install git+https://github.com/CAB-Lab-Princeton/NEFI.git
+
+[tool.setuptools]
+packages = ["rubisco_bd"]
