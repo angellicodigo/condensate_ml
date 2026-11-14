@@ -159,7 +159,7 @@ def compute_harmonic_bond_forces(
     return total_bond_forces
 
 
-def step_brownian_dynamics(
+def brownian_dynamics(
     positions: torch.Tensor,
     total_force: torch.Tensor,
     mobilities: torch.Tensor,

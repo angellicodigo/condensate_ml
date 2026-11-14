@@ -84,26 +84,27 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
-        # nn.Module must be initialised before attributes are assigned.
+        # Writing to the TimeStepper Parent Class. This means that a RubiscoEpyc1TimeStepper instance also has methods 
+        # from TimeStepper.
         super().__init__(
-            step=self.step,
-            init=self.init,
+            step=self.step, # What happens in one step. Defined later
+            init=self.init, # Initial setup. Defined later
             n_steps=n_steps,
             dt=dt,
-            observe=self.observe,
+            observe=self.observe, # What frames to observed. Defined later
             field=field,
             fields=fields if fields is not None else (field,),
             grad_mode=grad_mode,
             checkpoint_every=checkpoint_every,
         )
-
         self.box = float(box)
-        self.patch_dirs = PATCH_DIRS
         self.write_every = int(write_every)
         self.seed = int(seed)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
 
+        # Variables defined in constants.py used by all instances of RubiscoEpyc1TimeStepper
+        self.patch_dirs = PATCH_DIRS 
         self.n_rubisco = N_R
         self.n_patches_per_rubisco = PATCHES
         self.n_chains = N_C
@@ -112,11 +113,28 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         self.n_particles = N_R + N_R * PATCHES + N_C * N_BEADS
 
         layout = (self.n_rubisco, self.n_patches_per_rubisco, self.n_chains, self.n_beads_per_chain)
-
+        
+        """
+        topology.build_particle_labels() - returns a tensor of shape (n_particles,) of letters where each letter represents.
+            R: Rubisco core center.
+            P: Rubisco surface patch.
+            S: EPYC1 spacer bead.
+            T: EPYC1 sticker bead.
+        """
         self.particle_labels = topology.build_particle_labels(*layout, self.sticker_local_indices)
+        """
+        topology.build_particle_type_ids() - converts those letters to integers (R=0, P=1, S=2, T=3), giving a tensor of shape (n_particles,).
+        """
         self.particle_type_ids = topology.build_particle_type_ids(
             *layout, self.sticker_local_indices, device=self.device
         )
+        """
+        topology.build_mobilities_by_particle() - returns a tensor of shape (n_particles, 1) that represents how fast the particles move in our simulation. This is used to simulate the Brownian motion. 
+            GAMMA_RUBISCO = brownian.gamma["R"] = brownian.gamma["P"] = 5.0
+            GAMMA_CHAIN = brownian.gamma["S"] = brownian.gamma["T"] = 1.0
+        The dimensions has an extra (1) to utilize tensor broadcast mutliplication in step().
+        TODO: Question this
+        """
         self.mobilities_by_particle = topology.build_mobilities_by_particle(
             *layout,
             gamma_rubisco=GAMMA_RUBISCO,
@@ -124,10 +142,39 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
             device=self.device,
             dtype=self.dtype,
         )
-        self.bond_pairs_by_type = topology.build_bond_topologies(*layout, device=self.device)
-        self.k_by_type = {"chain": CHAIN_K, "patch_tether": PATCH_TETHER_K}
-        self.r0_by_type = {"chain": CHAIN_R0, "patch_tether": PATCH_RADIUS}
+        """
+        topology.build_bond_topologies() - returns a dictionary of two tables, "chain" and "patch-tehter". "chain" is a tensor of shape (n_chains * (n_beads_per_chain - 1), 2) and "patch-tehter" is a tensor of shape (n_rubisco * n_patches_per_rubisco, 2). Note that the number of bonds between the beads is equal to n_beads_per_chain - 1. Below is an example.
+        {
+            "chain": [[216, 217], [217, 218], [218, 219], ... , [790, 791]]
+                chain[0]  = [216, 217]    bead 0 -- bead 1
+                chain[1]  = [217, 218]    bead 1 -- bead 2
+                chain[2]  = [218, 219]    bead 2 -- bead 3
+                ...
+                chain[10] = [226, 227]    bead 10 -- bead 11   (last bond of chain 0)
+                chain[11] = [228, 229]    first bond of chain 1 (chain 1 starts at particle 228)
+                ...
+            "patch_tether": [[0, 24], [0, 25], ... [0, 31], [1, 32], ... [23, 215]] 
+                patch_tether[0]  = [0, 24]       Rubisco center 0 -- Rubisco patch 24
+                patch_tether[1]  = [0, 25]       Rubisco center 0 -- Rubisco patch 25
+                ...
+                patch_tether[7] = [0, 31]        Rubisco center 0 -- Rubisco patch 31
+                patch_tether[8] = [1, 32]        Rubisco center 1 -- Rubisco patch 32
+                ...
+        }
 
+        """
+        self.bond_pairs_by_type = topology.build_bond_topologies(*layout, device=self.device)
+        # More variables from constraints.py. They are lookup tables, given bond type's name -> return their values. They are used in conjunction with bond_pairs_by_type
+        # Defines spring stiffness
+        self.k_by_type = {"chain": CHAIN_K, "patch_tether": PATCH_TETHER_K}
+        # Defines spring rest / equilibrium length 
+        self.r0_by_type = {"chain": CHAIN_R0, "patch_tether": PATCH_RADIUS}
+        """
+        topology.build_steric_parameter_matrices() - returns three tensor matrices of shape (n_particles, n_particles). These three matrices represents the interactions of all particles with each other, depending on what type of particle they are. 
+        eps_mat - repulsion strength, epsilon
+        sig_mat - repulsion width, sigma
+        rcut_mat - distance beyond which they ignore each other. If particle A and B are < rcut_mat[A, B], they can interact with each other.
+        """
         eps_mat, sig_mat, rcut_mat = topology.build_steric_parameter_matrices(
             self.particle_type_ids, device=self.device, dtype=self.dtype
         )
@@ -135,8 +182,10 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         self.sigma_steric_matrix = sig_mat
         self.r_cut_steric_matrix = rcut_mat
 
-        # True where a pair interacts sterically: bonded pairs and self-pairs are False,
-        # matching HOOMD's default bond exclusions in the neighbor list.
+        """ 
+        topology.build_nonbonded_pair_mask() - boolean tensor matrix of shape (n_particles, n_particles)
+        nonbonded_pair_mask[a, b] = 1 -> Particle A and B are allowed to have a repulsive force between them
+        """
         self.nonbonded_pair_mask = topology.build_nonbonded_pair_mask(
             self.bond_pairs_by_type, self.n_particles, device=self.device
         )
@@ -220,7 +269,7 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         noise_std = torch.sqrt(2.0 * self.mobilities_by_particle * dt)
         noise_displacement = noise_std * torch.randn_like(state)
 
-        return forces.step_brownian_dynamics(
+        return forces.brownian_dynamics(
             state, f_total, self.mobilities_by_particle, dt, noise_displacement, self.box
         )
 
@@ -229,27 +278,3 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         if n % self.write_every == 0:
             return state
         return None
-
-
-# camelCase aliases kept for backward compatibility with the earlier sweep script and tests.
-_CAMEL_ALIASES = {
-    "particleLabels": "particle_labels",
-    "particleTypeIds": "particle_type_ids",
-    "mobilitiesByParticle": "mobilities_by_particle",
-    "bondPairsByType": "bond_pairs_by_type",
-    "kByType": "k_by_type",
-    "r0ByType": "r0_by_type",
-    "epsilonStericMatrix": "epsilon_steric_matrix",
-    "sigmaStericMatrix": "sigma_steric_matrix",
-    "rCutStericMatrix": "r_cut_steric_matrix",
-    "patchIndices": "patch_indices",
-    "stickerIndices": "sticker_indices",
-    "stickerChainIds": "sticker_chain_ids",
-    "patchRubiscoIds": "patch_rubisco_ids",
-}
-for _camel, _snake in _CAMEL_ALIASES.items():
-    setattr(
-        RubiscoEpyc1TimeStepper,
-        _camel,
-        property(lambda self, _s=_snake: getattr(self, _s)),
-    )
