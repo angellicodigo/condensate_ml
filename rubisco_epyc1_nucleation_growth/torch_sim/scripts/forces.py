@@ -159,6 +159,37 @@ def compute_harmonic_bond_forces(
     return total_bond_forces
 
 
+def compute_harmonic_bond_forces_fused(
+    positions: torch.Tensor,
+    pairs: torch.Tensor,
+    spring_constants: torch.Tensor,
+    rest_lengths: torch.Tensor,
+    box: float,
+) -> torch.Tensor:
+    """Compute all harmonic bond forces in one vectorized pass.
+
+    This is equivalent to :func:`compute_harmonic_bond_forces`, but combines all
+    bond types before computing forces.  The separate public function remains
+    available for validation and compatibility; the fused form avoids one
+    displacement/norm/scatter sequence per bond type during a rollout.
+    """
+    i_indices = pairs[:, 0]
+    j_indices = pairs[:, 1]
+    delta = positions[i_indices] - positions[j_indices]
+    delta_min = apply_minimum_image_displacement(delta, box)
+    distances = safe_vector_norm(delta_min, dim=-1, keepdim=True)
+    force_magnitudes = -spring_constants[:, None] * (distances - rest_lengths[:, None])
+    forces_on_i = force_magnitudes * (delta_min / distances)
+
+    total_forces = torch.zeros_like(positions)
+    total_forces = total_forces.scatter_add(
+        0, i_indices[:, None].expand(-1, positions.shape[-1]), forces_on_i
+    )
+    return total_forces.scatter_add(
+        0, j_indices[:, None].expand(-1, positions.shape[-1]), -forces_on_i
+    )
+
+
 def brownian_dynamics(
     positions: torch.Tensor,
     total_force: torch.Tensor,

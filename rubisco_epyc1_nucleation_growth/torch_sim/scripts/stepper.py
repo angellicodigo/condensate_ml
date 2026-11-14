@@ -83,11 +83,18 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         fields: Sequence[str] | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
+        compile_step: bool = False,
     ) -> None:
         # Writing to the TimeStepper Parent Class. This means that a RubiscoEpyc1TimeStepper instance also has methods 
         # from TimeStepper.
+        step_fn = self.step
+        if compile_step:
+            if not hasattr(torch, "compile"):
+                raise RuntimeError("compile_step=True requires PyTorch 2.0 or newer")
+            step_fn = torch.compile(step_fn, mode="reduce-overhead")
+
         super().__init__(
-            step=self.step, # What happens in one step. Defined later
+            step=step_fn, # What happens in one step. Defined later
             init=self.init, # Initial setup. Defined later
             n_steps=n_steps,
             dt=dt,
@@ -169,6 +176,7 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         self.k_by_type = {"chain": CHAIN_K, "patch_tether": PATCH_TETHER_K}
         # Defines spring rest / equilibrium length 
         self.r0_by_type = {"chain": CHAIN_R0, "patch_tether": PATCH_RADIUS}
+        self.bond_pairs, self.bond_k, self.bond_r0 = self._build_fused_bonds()
         """
         topology.build_steric_parameter_matrices() - returns three tensor matrices of shape (n_particles, n_particles). These three matrices represents the interactions of all particles with each other, depending on what type of particle they are. 
         eps_mat - repulsion strength, epsilon
@@ -210,6 +218,26 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
             device=self.device,
         )
 
+        # This factor is fixed for the lifetime of the stepper.  Computing it
+        # once avoids a sqrt and a broadcast setup on every integration step.
+        self.noise_std = torch.sqrt(2.0 * self.mobilities_by_particle * self.dt)
+
+    def _build_fused_bonds(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Pack the fixed bond tables into tensors consumed by the fused kernel."""
+        bond_types = tuple(self.bond_pairs_by_type)
+        pairs = torch.cat([self.bond_pairs_by_type[name] for name in bond_types], dim=0)
+        k = torch.tensor(
+            [self.k_by_type[name] for name in bond_types for _ in range(self.bond_pairs_by_type[name].shape[0])],
+            device=self.device,
+            dtype=self.dtype,
+        )
+        r0 = torch.tensor(
+            [self.r0_by_type[name] for name in bond_types for _ in range(self.bond_pairs_by_type[name].shape[0])],
+            device=self.device,
+            dtype=self.dtype,
+        )
+        return pairs, k, r0
+
     # ------------------------------------------------------------------------------
     # TimeStepper callbacks
     # ------------------------------------------------------------------------------
@@ -243,8 +271,8 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         if not torch.is_tensor(epsilon_att):
             epsilon_att = torch.tensor(epsilon_att, device=state.device, dtype=state.dtype)
 
-        f_bonds = forces.compute_harmonic_bond_forces(
-            state, self.bond_pairs_by_type, self.k_by_type, self.r0_by_type, self.box
+        f_bonds = forces.compute_harmonic_bond_forces_fused(
+            state, self.bond_pairs, self.bond_k, self.bond_r0, self.box
         )
         f_sterics = forces.compute_gaussian_steric_forces(
             state,
@@ -266,8 +294,7 @@ class RubiscoEpyc1TimeStepper(TimeStepper):
         f_total = f_bonds + f_sterics + f_attract
 
         # kT = 1 => diffusion coefficient D = mobility; noise std = sqrt(2 D dt)
-        noise_std = torch.sqrt(2.0 * self.mobilities_by_particle * dt)
-        noise_displacement = noise_std * torch.randn_like(state)
+        noise_displacement = self.noise_std * torch.randn_like(state)
 
         return forces.brownian_dynamics(
             state, f_total, self.mobilities_by_particle, dt, noise_displacement, self.box
