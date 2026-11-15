@@ -13,6 +13,7 @@ app = marimo.App(width="medium")
 def _():
     import marimo as mo
     import json
+    import sys
     import numpy as np
     import gsd.hoomd
     import hoomd
@@ -36,7 +37,7 @@ def _(mo):
     The purpose of this notebook is to:
     1. Explain how the code in the "simulate_hoomd_patchy_full.py" works
     2. Explain the physics involved in modeling the pyrenoid and cholorplast.
-    3. Explain how we translated "simulate_hoodmd_patchy_full.py" to a differentiable simulation that uses Pytorch tensors.
+    3. Explain how we translated "simulate_hood_patchy_full.py" into a differentiable version of the original simulation that uses Pytorch tensors.
 
     We will start by analyzing lines of code in the "simulate_hood_patchy_full.py" file. The Python cells below will consist of code copied from the "simulate_hood_patchy_full.py" file.
     """)
@@ -170,32 +171,6 @@ def _(KON):
         PATCH_TETHER_K,
         STICKER_INDEX,
     )
-
-
-@app.cell(hide_code=True)
-def _():
-    # from manim import Scene, Square, Circle, PINK, Create, Transform, tempconfig
-
-    # class SquareToCircle(Scene):
-    #     def construct(self):
-    #         square = Square()
-    #         circle = Circle()
-    #         circle.set_fill(PINK, opacity=0.5)
-    #         self.play(Create(square))
-    #         self.play(Transform(square, circle))
-    #         self.wait()
-
-
-    # with tempconfig({
-    #     "disable_caching": True,
-    #     "verbosity": "WARNING",
-    # }):
-    #     scene = SquareToCircle()
-    #     scene.render()
-
-    # video_path = scene.renderer.file_writer.final_file_path
-    # mo.video(str(video_path))
-    return
 
 
 @app.cell
@@ -422,7 +397,7 @@ def _(md, particle_types):
     # BOUNDED SOFT REPULSION
     # Gaussian repulsion is bounded and avoids LJ blow-ups.
     # ============================================================
-    # A repulsion force prevents unrealistic overlap
+    # Using a repulsion force to prevent unrealistic overlap of the particles
     soft_rep = md.pair.Gaussian(nlist=nl)
 
     for type_a1 in particle_types:
@@ -600,7 +575,7 @@ def _(Path, mpimg, os, plt):
             ax = fig.add_subplot(gs[i, j])
             ax.imshow(images[f"{s}_{m}"])
             ax.axis("off")
-        
+
     fig
     return
 
@@ -609,6 +584,67 @@ def _(Path, mpimg, os, plt):
 def _(mo):
     mo.md(r"""
     # Differentiable Simulation
+    To make this simulation differentiable while using Pytorch tensors, we will subclass `nefi.operators.timestepping.TimeStepper` (See https://cab-lab-princeton.github.io/NEFI/) . In the code, we will create a subclass called `RubiscoEpyc1TimeStepper(TimeStepper)` that inherits the `TimeStepper` class while performing the Rubisco-EPYC1 simulation.
+    """)
+    return
+
+
+@app.cell
+def _():
+    from condensate_ml import RubiscoEpyc1TimeStepper
+    import torch
+    torch.manual_seed(102)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    param_example = {
+        "name": "control",
+        "BOX": 40,
+        "EPS": 0.5,
+        "N_STEPS": 100000,
+        "WRITE_EVERY": 500,
+        "SEED": 101
+    }
+
+    epsilon = torch.tensor(-param_example.get("EPS"), device=device, dtype=torch.float32, requires_grad=True)
+
+    # --- Build the stepper ---
+    stepper = RubiscoEpyc1TimeStepper(
+        n_steps=param_example.get("N_STEPS"),
+        box=param_example.get("BOX"),
+        write_every=param_example.get("WRITE_EVERY"),
+        seed=param_example.get("SEED"),
+        device=device,
+        grad_mode="checkpoint",      # default; keeps memory bounded for long rollouts
+    )
+
+    # # --- Run the simulation ---
+    # fields = {"epsilon": epsilon}
+    # trajectory = stepper(fields)     # differentiable (T, 792, 3)
+
+    # print("trajectory shape:", trajectory.shape)
+    # # Expected frames: n_steps // write_every + 1 = 100000 // 500 + 1 = 201
+    # # Shape: (201, 792, 3)  where 792 = 24 Rubisco + 192 patches + 48 chains × 12 beads
+    # # If you only want to simulate (no gradients)
+    # epsilon = torch.tensor(-0.8, device=device, dtype=torch.float32)
+
+    with torch.no_grad():
+        trajectory = stepper({"epsilon": epsilon})
+    # # If you want to train / optimize epsilon
+    # optimizer = torch.optim.Adam([epsilon], lr=1e-3)
+
+    # for it in range(100):
+    #     optimizer.zero_grad()
+    #     trajectory = stepper({"epsilon": epsilon})
+    #     # loss = your_loss_fn(trajectory, stepper.sticker_indices, stepper.patch_indices, box=box)
+    #     # loss.backward()
+    #     # optimizer.step()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Let's see how `RubiscoEpyc1TimeStepper` under the hood.
     """)
     return
 

@@ -1,9 +1,3 @@
-"""JAX MD model constants copied from the HOOMD reference model.
-
-Keeping these constants inside the JAX MD package makes the backend installable
-without importing the PyTorch/NEFI package.
-"""
-
 from __future__ import annotations
 
 import numpy as np

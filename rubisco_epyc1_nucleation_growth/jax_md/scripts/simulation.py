@@ -54,7 +54,6 @@ from .constants import (
 from . import forces
 from .initial_snapshot import generate_initial_coordinates
 
-
 def kon_to_epsilon(kon: jax.Array | float) -> jax.Array | float:
     return -kon
 
@@ -469,6 +468,3 @@ class RubiscoEpyc1Simulation:
             finally:
                 self.seed = old_seed
         return self(fields)
-
-
-__all__ = ["RubiscoEpyc1Simulation", "kon_to_epsilon"]
