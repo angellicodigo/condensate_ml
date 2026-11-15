@@ -4,7 +4,7 @@ Importing this module has no side effects. Typical use from an ML training scrip
 
     import jax
     import jax.numpy as jnp
-    from condensate_ml.jax_md import RubiscoEpyc1Simulation
+    from condensate_ml import RubiscoEpyc1Simulation
 
     stepper = RubiscoEpyc1Simulation(n_steps=2000, box=35.0,
                                      write_every=100, seed=0)
@@ -24,6 +24,7 @@ time loop.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import Any
 
@@ -56,6 +57,17 @@ from .initial_snapshot import generate_initial_coordinates
 
 def kon_to_epsilon(kon: jax.Array | float) -> jax.Array | float:
     return -kon
+
+
+def _neighbor_coordinates(positions: jax.Array, box: float) -> jax.Array:
+    """Shift origin-centred coordinates [-L/2, L/2) into [0, L) for the neighbor list.
+
+    JAX MD's cell list assumes coordinates in [0, L). Given negative coordinates it
+    silently omits every pair that crosses a periodic face, so those pairs would feel
+    no steric repulsion, attraction or bond force. Forces still use the centred
+    coordinates; the periodic displacement is unaffected by this shift.
+    """
+    return positions + 0.5 * box
 
 
 def _make_type_tables(dtype: Any) -> tuple[jax.Array, jax.Array, jax.Array]:
@@ -99,6 +111,8 @@ class RubiscoEpyc1Simulation:
         neighbor_buffer: float = 0.4,
         dtype: Any = jnp.float32,
         checkpoint_blocks: bool = True,
+        neighbor_extra_capacity: int = 32,
+        max_capacity_retries: int = 3,
     ) -> None:
         # Unlike the PyTorch/NEFI implementation, this class is not a
         # TimeStepper subclass. The rollout below is expressed directly with
@@ -111,6 +125,12 @@ class RubiscoEpyc1Simulation:
         # seed          - JAX PRNG seed for initial coordinates and noise.
         # neighbor_buffer - cell-list skin distance, analogous to HOOMD's buffer.
         # checkpoint_blocks - rematerialize scan blocks during reverse-mode autodiff.
+        # neighbor_extra_capacity - spare neighbor slots per particle beyond what the
+        #                   initial layout needs. Condensed clusters have far more
+        #                   neighbors than the starting lattice (about 43 vs 22 for
+        #                   BOX=29, EPS=2.5); pairs beyond the capacity are dropped silently.
+        # max_capacity_retries - a concrete (non-differentiated) call that overflows is
+        #                   repeated with doubled capacity up to this many times.
         if n_steps < 0 or write_every < 1 or n_steps % write_every:
             raise ValueError("n_steps must be nonnegative and divisible by write_every")
         self.n_steps = int(n_steps)
@@ -119,6 +139,9 @@ class RubiscoEpyc1Simulation:
         self.write_every = int(write_every)
         self.seed = int(seed)
         self.dtype = dtype
+        self._extra_capacity = int(neighbor_extra_capacity)
+        self._max_capacity_retries = int(max_capacity_retries)
+        self.last_neighbor_overflow = False   # set by every call that is not being differentiated
         # Variables defined in constants.py and used by every instance of the
         # Rubisco-EPYC1 JAX MD stepper. Particle order is Rubisco centers,
         # Rubisco patches, then EPYC1 chain beads.
@@ -196,6 +219,12 @@ class RubiscoEpyc1Simulation:
         # Compilation is lazy: the first call pays the XLA compilation cost;
         # compatible later calls reuse the compiled executable.
         self._compiled_rollout = jax.jit(self._make_rollout(checkpoint_blocks))
+
+    def _allocate_neighbors(self, positions: jax.Array):
+        """Allocate neighbor-list storage with spare slots (see neighbor_extra_capacity)."""
+        return self.neighbor_fn.allocate(
+            _neighbor_coordinates(positions, self.box), extra_capacity=self._extra_capacity
+        )
 
     def _build_labels(self) -> list[str]:
         """Return HOOMD-compatible particle labels: R, P, S, and T."""
@@ -297,7 +326,7 @@ class RubiscoEpyc1Simulation:
         def one_step(carry, _):
             """One overdamped Euler-Maruyama Brownian dynamics step."""
             positions, neighbors, key, epsilon = carry
-            neighbors = neighbors.update(positions)
+            neighbors = neighbors.update(_neighbor_coordinates(positions, box))
             key, noise_key = jax.random.split(key)
 
             # Compute the three physical force contributions. The Gaussian
@@ -334,7 +363,8 @@ class RubiscoEpyc1Simulation:
         def rollout(positions, epsilon, key, neighbors):
             carry = (positions, neighbors, key, epsilon)
             carry, block_frames = jax.lax.scan(integrate_block, carry, None, length=n_blocks)
-            return jnp.concatenate((positions[None], block_frames), axis=0)
+            # The overflow flag is sticky: True if ANY update in the run lost neighbors.
+            return jnp.concatenate((positions[None], block_frames), axis=0), carry[1].did_buffer_overflow
 
         return rollout
 
@@ -352,7 +382,8 @@ class RubiscoEpyc1Simulation:
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
         epsilon = jnp.asarray(epsilon, dtype=self.dtype)
-        neighbors = self.neighbor_fn.allocate(positions).update(positions)
+        shifted = _neighbor_coordinates(positions, self.box)
+        neighbors = self._allocate_neighbors(positions).update(shifted)
         return forces.total_forces(
             positions,
             neighbors.idx,
@@ -406,7 +437,8 @@ class RubiscoEpyc1Simulation:
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
         epsilon = jnp.asarray(epsilon, dtype=self.dtype)
-        neighbors = self.neighbor_fn.allocate(positions).update(positions)
+        shifted = _neighbor_coordinates(positions, self.box)
+        neighbors = self._allocate_neighbors(positions).update(shifted)
         steric, attraction, bonded = forces.force_components(
             positions,
             neighbors.idx,
@@ -442,18 +474,29 @@ class RubiscoEpyc1Simulation:
         if epsilon is None:
             raise KeyError("JAX MD stepper requires fields['epsilon']")
         positions = self.init(fields)
-        # Allocate the fixed-shape neighbor-list storage before entering the
-        # compiled function.  The list is updated inside each timestep.
-        neighbors = self.neighbor_fn.allocate(positions)
+        epsilon = jnp.asarray(epsilon, dtype=self.dtype)
         # JAX uses explicit PRNG keys rather than a mutable global RNG.  The
         # key is carried through lax.scan so every step receives fresh noise.
         key = jax.random.PRNGKey(self.seed)
-        return self._compiled_rollout(
-            positions,
-            jnp.asarray(epsilon, dtype=self.dtype),
-            key,
-            neighbors,
+        for attempt in range(self._max_capacity_retries + 1):
+            # Allocate the fixed-shape neighbor-list storage before entering the
+            # compiled function.  The list is updated inside each timestep.
+            neighbors = self._allocate_neighbors(positions)
+            frames, overflow = self._compiled_rollout(positions, epsilon, key, neighbors)
+            if isinstance(overflow, jax.core.Tracer):
+                # Being differentiated or jitted: the flag cannot be read here. Run one
+                # ordinary call first so any needed capacity growth has already happened.
+                return frames
+            self.last_neighbor_overflow = bool(overflow)
+            if not self.last_neighbor_overflow:
+                return frames
+            if attempt < self._max_capacity_retries:
+                self._extra_capacity = max(2 * self._extra_capacity, 16)   # recompiles once
+        warnings.warn(
+            "Neighbor list overflowed even after growing its capacity; some interacting pairs "
+            "were dropped. Increase neighbor_extra_capacity.", RuntimeWarning, stacklevel=2,
         )
+        return frames
 
     def rollout(self, epsilon: Any, positions_0: Any | None = None, seed: int | None = None) -> jax.Array:
         """Convenience API equivalent to ``stepper({'epsilon': epsilon})``."""
