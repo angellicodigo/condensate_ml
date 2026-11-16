@@ -76,4 +76,4 @@ def test_different_epsilon_values_change_the_loss() -> None:
 
     assert np.isfinite(float(weak_attraction))
     assert np.isfinite(float(strong_attraction))
-    assert not np.isclose(float(weak_attraction), float(strong_attraction))
+    assert abs(float(weak_attraction - strong_attraction)) > 1e-6

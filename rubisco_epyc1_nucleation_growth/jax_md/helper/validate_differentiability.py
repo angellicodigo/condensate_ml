@@ -40,7 +40,8 @@ def trajectory_loss(simulation, epsilon: Any) -> jax.Array:
 
 def epsilon_value_and_gradient(simulation, epsilon: Any):
     """Return loss and autodiff gradient with respect to epsilon."""
-    return jax.value_and_grad(trajectory_loss)(simulation, epsilon)
+    loss_for_epsilon = lambda value: trajectory_loss(simulation, value)
+    return jax.value_and_grad(loss_for_epsilon)(epsilon)
 
 
 def finite_difference_epsilon_gradient(simulation, epsilon: Any, step: float) -> jax.Array:
