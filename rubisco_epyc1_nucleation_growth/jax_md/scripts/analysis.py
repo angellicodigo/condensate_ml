@@ -70,7 +70,9 @@ def analyze_gsd(path: str | Path, dt: float, contact_cutoff: float = CONTACT_CUT
         for frame_index, frame in enumerate(trajectory):
             positions = np.asarray(frame.particles.position)
             box = float(frame.configuration.box[0])
-            delta = positions[sticker_indices, None, :] - positions[patch_indices, :, :]
+            sticker_positions = positions[sticker_indices]
+            patch_positions = positions[patch_indices]
+            delta = sticker_positions[:, None, :] - patch_positions[None, :, :]
             distances = np.linalg.norm(_minimum_image(delta, box), axis=-1)
             contacts = np.argwhere(distances < contact_cutoff)
             edges = [
