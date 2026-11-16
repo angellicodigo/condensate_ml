@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import gsd.hoomd
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -133,55 +132,3 @@ def analyze_gsd(
             )
     return pd.DataFrame(records)
 
-
-def plot_analysis_grid(analysis_df: pd.DataFrame, scenario_name: str) -> plt.Figure:
-    """Create an in-memory four-panel plot for one scenario."""
-    metrics = [
-        ("bonds", "Contacts / bonds"),
-        ("clusters", "Number of clusters"),
-        ("fraction", "Largest cluster fraction"),
-        ("largest", "Largest cluster size"),
-    ]
-    fig, axes = plt.subplots(1, len(metrics), figsize=(25, 6), constrained_layout=True)
-    for axis, (metric, ylabel) in zip(axes, metrics):
-        axis.plot(analysis_df["time"], analysis_df[metric], linewidth=2)
-        axis.set_title(metric.title(), fontweight="bold")
-        axis.set_xlabel("Time")
-        axis.set_ylabel(ylabel)
-        axis.grid(alpha=0.25)
-    fig.suptitle(scenario_name.title(), fontsize=18, fontweight="bold")
-    return fig
-
-
-def plot_multiple_scenarios(
-    analysis_by_scenario: dict[str, pd.DataFrame],
-) -> plt.Figure:
-    """Create an in-memory scenario-by-metric plot grid."""
-    metrics = [
-        ("bonds", "Contacts / bonds"),
-        ("clusters", "Number of clusters"),
-        ("fraction", "Largest cluster fraction"),
-        ("largest", "Largest cluster size"),
-    ]
-    scenarios = list(analysis_by_scenario)
-    fig, axes = plt.subplots(
-        len(scenarios), len(metrics),
-        figsize=(25, 5 * len(scenarios)),
-        squeeze=False,
-        constrained_layout=True,
-    )
-    for row, scenario in enumerate(scenarios):
-        data = analysis_by_scenario[scenario]
-        for column, (metric, ylabel) in enumerate(metrics):
-            axis = axes[row, column]
-            axis.plot(data["time"], data[metric], linewidth=2)
-            axis.set_title(metric.title(), fontweight="bold")
-            axis.set_xlabel("Time")
-            axis.set_ylabel(ylabel)
-            axis.grid(alpha=0.25)
-            if column == 0:
-                axis.text(
-                    -0.25, 0.5, scenario.title(), transform=axis.transAxes,
-                    rotation=90, va="center", ha="center", fontweight="bold",
-                )
-    return fig

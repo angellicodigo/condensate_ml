@@ -27,8 +27,6 @@ from .trajectory_analysis import (
     DEFAULT_DT,
     analyze_frame,
     analyze_gsd,
-    plot_analysis_grid,
-    plot_multiple_scenarios,
 )
 
 __all__ = [
@@ -54,6 +52,4 @@ __all__ = [
     "minimum_image",
     "perturbed_state",
     "perturbed_positions",
-    "plot_analysis_grid",
-    "plot_multiple_scenarios",
 ]

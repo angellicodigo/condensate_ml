@@ -54,6 +54,7 @@ from .constants import (
     TYPE_INDEX,
 )
 from . import forces
+from .analysis import write_analysis_outputs
 from .initial_snapshot import generate_initial_coordinates
 from .output import write_gsd
 
@@ -497,17 +498,17 @@ class RubiscoEpyc1Simulation:
             if isinstance(overflow, jax.core.Tracer):
                 # Being differentiated or jitted: the flag cannot be read here. Run one
                 # ordinary call first so any needed capacity growth has already happened.
-                return self._write_output_if_requested(frames)
+                return self._write_output_if_requested(frames, epsilon)
             self.last_neighbor_overflow = bool(overflow)
             if not self.last_neighbor_overflow:
-                return self._write_output_if_requested(frames)
+                return self._write_output_if_requested(frames, epsilon)
             if attempt < self._max_capacity_retries:
                 self._extra_capacity = max(2 * self._extra_capacity, 16)   # recompiles once
         warnings.warn(
             "Neighbor list overflowed even after growing its capacity; some interacting pairs "
             "were dropped. Increase neighbor_extra_capacity.", RuntimeWarning, stacklevel=2,
         )
-        return self._write_output_if_requested(frames)
+        return self._write_output_if_requested(frames, epsilon)
 
     def write_gsd(
         self,
@@ -523,7 +524,7 @@ class RubiscoEpyc1Simulation:
         if path is None:
             if self.output_dir is None:
                 raise ValueError("Set output_dir or pass an explicit GSD path")
-            path = self.output_dir / f"{self.output_name}.gsd"
+            path = self._artifact_directories()["traj"] / f"{self.output_name}.gsd"
         bond_type_ids = np.concatenate(
             [
                 np.zeros(528, dtype=np.uint32),
@@ -540,10 +541,35 @@ class RubiscoEpyc1Simulation:
             bond_type_ids=bond_type_ids,
         )
 
-    def _write_output_if_requested(self, trajectory: jax.Array) -> jax.Array:
+    def _artifact_directories(self) -> dict[str, Path]:
+        """Return device-specific artifact directories under ``output_dir``."""
+        if self.output_dir is None:
+            raise ValueError("output_dir is not configured")
+        device_label = "gpu" if any(device.platform == "gpu" for device in jax.devices()) else "cpu"
+        directories = {
+            "traj": self.output_dir / f"traj_jaxmd_{device_label}",
+            "xyz": self.output_dir / f"xyz_jaxmd_{device_label}",
+            "data": self.output_dir / f"data_jaxmd_{device_label}",
+            "plots": self.output_dir / f"plots_jaxmd_{device_label}",
+        }
+        for directory in directories.values():
+            directory.mkdir(parents=True, exist_ok=True)
+        return directories
+
+    def _write_output_if_requested(self, trajectory: jax.Array, epsilon: Any) -> jax.Array:
         """Write ordinary forward results without interfering with JAX transforms."""
         if self.output_dir is not None and not isinstance(trajectory, jax.core.Tracer):
-            self.write_gsd(trajectory)
+            directories = self._artifact_directories()
+            gsd_path = self.write_gsd(trajectory)
+            write_analysis_outputs(
+                gsd_path=gsd_path,
+                xyz_path=directories["xyz"] / f"{self.output_name}.xyz",
+                csv_path=directories["data"] / f"{self.output_name}.csv",
+                plots_dir=directories["plots"],
+                output_name=self.output_name,
+                dt=self.dt,
+                epsilon=float(np.asarray(epsilon)),
+            )
         return trajectory
 
     def rollout(self, epsilon: Any, positions_0: Any | None = None, seed: int | None = None) -> jax.Array:
