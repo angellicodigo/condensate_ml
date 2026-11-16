@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import jax
@@ -54,6 +55,7 @@ from .constants import (
 )
 from . import forces
 from .initial_snapshot import generate_initial_coordinates
+from .output import write_gsd
 
 def kon_to_epsilon(kon: jax.Array | float) -> jax.Array | float:
     return -kon
@@ -99,6 +101,11 @@ class RubiscoEpyc1Simulation:
     ``write_every`` must divide ``n_steps`` in this prototype.  The rollout is
     compiled lazily on the first call.  Subsequent calls with the same shapes,
     dtype, device, and timestep settings reuse the compiled executable.
+
+    If ``output_dir`` is supplied, ordinary forward calls write sampled frames
+    to ``output_dir / output_name.gsd``. GSD writing is a host-side side effect
+    and is skipped inside JAX transformations; use :meth:`write_gsd` explicitly
+    for trajectories returned by differentiated code.
     """
 
     def __init__(
@@ -113,6 +120,8 @@ class RubiscoEpyc1Simulation:
         checkpoint_blocks: bool = True,
         neighbor_extra_capacity: int = 32,
         max_capacity_retries: int = 3,
+        output_dir: str | Path | None = None,
+        output_name: str = "trajectory",
     ) -> None:
         # Unlike the PyTorch/NEFI implementation, this class is not a
         # TimeStepper subclass. The rollout below is expressed directly with
@@ -142,6 +151,8 @@ class RubiscoEpyc1Simulation:
         self._extra_capacity = int(neighbor_extra_capacity)
         self._max_capacity_retries = int(max_capacity_retries)
         self.last_neighbor_overflow = False   # set by every call that is not being differentiated
+        self.output_dir = None if output_dir is None else Path(output_dir)
+        self.output_name = str(output_name)
         # Variables defined in constants.py and used by every instance of the
         # Rubisco-EPYC1 JAX MD stepper. Particle order is Rubisco centers,
         # Rubisco patches, then EPYC1 chain beads.
@@ -486,17 +497,54 @@ class RubiscoEpyc1Simulation:
             if isinstance(overflow, jax.core.Tracer):
                 # Being differentiated or jitted: the flag cannot be read here. Run one
                 # ordinary call first so any needed capacity growth has already happened.
-                return frames
+                return self._write_output_if_requested(frames)
             self.last_neighbor_overflow = bool(overflow)
             if not self.last_neighbor_overflow:
-                return frames
+                return self._write_output_if_requested(frames)
             if attempt < self._max_capacity_retries:
                 self._extra_capacity = max(2 * self._extra_capacity, 16)   # recompiles once
         warnings.warn(
             "Neighbor list overflowed even after growing its capacity; some interacting pairs "
             "were dropped. Increase neighbor_extra_capacity.", RuntimeWarning, stacklevel=2,
         )
-        return frames
+        return self._write_output_if_requested(frames)
+
+    def write_gsd(
+        self,
+        trajectory: Any,
+        path: str | Path | None = None,
+    ) -> Path:
+        """Write a trajectory to GSD and return its path.
+
+        If ``path`` is omitted, ``output_dir/output_name.gsd`` is used. This
+        explicit method is also the recommended way to write a trajectory
+        produced inside a differentiated or transformed JAX function.
+        """
+        if path is None:
+            if self.output_dir is None:
+                raise ValueError("Set output_dir or pass an explicit GSD path")
+            path = self.output_dir / f"{self.output_name}.gsd"
+        bond_type_ids = np.concatenate(
+            [
+                np.zeros(528, dtype=np.uint32),
+                np.ones(192, dtype=np.uint32),
+            ]
+        )
+        return write_gsd(
+            path=path,
+            trajectory=trajectory,
+            box=self.box,
+            particle_type_ids=self.type_ids,
+            bond_pairs=self.bond_pairs,
+            write_every=self.write_every,
+            bond_type_ids=bond_type_ids,
+        )
+
+    def _write_output_if_requested(self, trajectory: jax.Array) -> jax.Array:
+        """Write ordinary forward results without interfering with JAX transforms."""
+        if self.output_dir is not None and not isinstance(trajectory, jax.core.Tracer):
+            self.write_gsd(trajectory)
+        return trajectory
 
     def rollout(self, epsilon: Any, positions_0: Any | None = None, seed: int | None = None) -> jax.Array:
         """Convenience API equivalent to ``stepper({'epsilon': epsilon})``."""
