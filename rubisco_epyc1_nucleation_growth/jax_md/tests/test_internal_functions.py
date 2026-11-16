@@ -9,7 +9,7 @@
 
 Run with::
 
-    pytest rubisco_epyc1_nucleation_growth/jax_md/tests/test_jax_internal.py -v -s
+    pytest rubisco_epyc1_nucleation_growth/jax_md/tests/test_internal_functions.py -v -s
 """
 
 from __future__ import annotations
@@ -153,3 +153,25 @@ def test_short_stochastic_rollout_is_sane():
     assert np.isfinite(frames).all()
     assert frames.max() < 14.5 + 1e-4 and frames.min() >= -14.5 - 1e-4
     assert not bool(sim.last_neighbor_overflow)
+
+
+def test_pair_across_periodic_boundary_matches_brute_force():
+    """Two Rubisco cores 0.2 apart across the box face must interact.
+
+    Dropping cross-boundary pairs was a real bug in an earlier version, so this
+    compares the full force with the minimum-image brute-force reference
+    instead of only checking that the result is finite.
+    """
+    box = 40.0
+    sim = make(box, 101)
+    pos = np.asarray(sim.init(), np.float64).copy()
+    pos[0] = [box / 2 - 0.1, 0.0, 0.0]
+    pos[1] = [-box / 2 + 0.1, 0.0, 0.0]
+    pos = pos.astype(np.float32).astype(np.float64)
+    got = np.asarray(sim.compute_force_components(pos, -0.8)["steric"], np.float64)
+    ref = brute_force_components(sim, pos, -0.8)["steric"]
+    assert np.isfinite(got).all()
+    # The two cores repel along x through the periodic face.
+    assert got[0, 0] < 0.0 < got[1, 0]
+    np.testing.assert_allclose(got[:2], ref[:2], rtol=1e-4, atol=1e-4)
+    assert np.linalg.norm(got - ref) <= 1e-4 * np.linalg.norm(ref) + 5e-3

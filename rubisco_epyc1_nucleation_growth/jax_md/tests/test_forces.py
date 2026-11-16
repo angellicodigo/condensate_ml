@@ -2,12 +2,7 @@
 
 HOOMD and JAX use different random-number generators, so deterministic force
 checks use ``kT=0``. HOOMD force objects are read directly after ``run(0)``;
-the deterministic step test separately checks position updates.
-
-    x_next = x + mobility * force * dt
-
-The HOOMD force can therefore be recovered from the position change and
-compared directly with JAX MD's force arrays.
+test_one_step.py separately checks the deterministic position update.
 """
 
 from __future__ import annotations
@@ -191,49 +186,60 @@ def test_jax_force_satisfies_newtons_third_law() -> None:
     _, positions = build_hoomd_initial_state(BOX, 107)
     components = jax_force_components(positions, -0.8)
     for name in ("steric", "sticker_patch", "bonded", "total"):
+        # float32 sums of ~800 forces: scale the tolerance with the largest force.
+        tolerance = 1e-5 * max(1.0, float(np.max(np.abs(components[name]))))
         np.testing.assert_allclose(
             components[name].sum(axis=0),
             np.zeros(3),
-            atol=1e-5,
+            atol=tolerance,
             rtol=0.0,
             err_msg=f"Net force is nonzero for {name}",
         )
 
 
-def test_jax_force_is_finite_across_periodic_boundary() -> None:
-    """A minimum-image interaction across the box boundary remains finite."""
-    pytest.importorskip("jax")
-    pytest.importorskip("jax_md")
+def _rollout_simulation():
     from condensate_ml import RubiscoEpyc1Simulation
 
-    simulation = RubiscoEpyc1Simulation(n_steps=1, box=BOX, write_every=1)
-    positions = np.asarray(simulation.init(), dtype=np.float32).copy()
-    positions[0] = np.asarray([BOX / 2.0 - 0.1, 0.0, 0.0])
-    positions[1] = np.asarray([-BOX / 2.0 + 0.1, 0.0, 0.0])
-    forces = np.asarray(simulation.compute_forces(positions, -0.8))
-    assert np.isfinite(forces).all()
+    return RubiscoEpyc1Simulation(n_steps=40, box=29.0, write_every=10, seed=105)
 
 
-def test_force_gradient_with_respect_to_epsilon_matches_finite_difference() -> None:
-    """The JAX force derivative with respect to epsilon agrees with finite differences."""
+def test_rollout_gradient_with_respect_to_epsilon_matches_finite_difference() -> None:
+    """Autodiff through a 40-step rollout agrees with central finite differences.
+
+    The force is linear in epsilon, so differentiating a single force call is a
+    trivial check. A rollout also differentiates through the neighbor list,
+    periodic wrapping, ``lax.scan`` and ``jax.checkpoint``.
+    """
     pytest.importorskip("jax")
     pytest.importorskip("jax_md")
     import jax
     import jax.numpy as jnp
-    from condensate_ml import RubiscoEpyc1Simulation
 
-    simulation = RubiscoEpyc1Simulation(n_steps=1, box=BOX, write_every=1)
-    positions = jnp.asarray(simulation.init())
-    direction = jnp.arange(positions.size, dtype=positions.dtype).reshape(positions.shape)
+    simulation = _rollout_simulation()
+    sticker = np.asarray(simulation.type_ids) == 3
+    patch = np.asarray(simulation.type_ids) == 1
+    box = simulation.box
 
-    def scalar_force(epsilon):
-        return jnp.sum(simulation.compute_forces(positions, epsilon) * direction)
+    def mean_square_loss(epsilon):
+        last = simulation({"epsilon": epsilon})[-1]
+        return jnp.mean(last**2) + jnp.mean(jnp.var(last, axis=0))
 
-    epsilon = jnp.asarray(-0.8, dtype=positions.dtype)
-    automatic = jax.grad(scalar_force)(epsilon)
-    h = jnp.asarray(1e-4, dtype=positions.dtype)
-    finite_difference = (scalar_force(epsilon + h) - scalar_force(epsilon - h)) / (2.0 * h)
-    np.testing.assert_allclose(automatic, finite_difference, atol=1e-3, rtol=1e-3)
+    def contact_loss(epsilon):
+        last = simulation({"epsilon": epsilon})[-1]
+        delta = last[sticker][:, None, :] - last[patch][None, :, :]
+        delta = delta - box * jnp.round(delta / box)
+        return jnp.mean(jnp.exp(-0.5 * jnp.sum(delta**2, axis=-1)))
+
+    epsilon = jnp.asarray(-2.0, dtype=jnp.float32)
+    h = jnp.asarray(0.2, dtype=jnp.float32)
+    for loss in (mean_square_loss, contact_loss):
+        automatic = jax.grad(loss)(epsilon)
+        finite_difference = (loss(epsilon + h) - loss(epsilon - h)) / (2.0 * h)
+        print(f"{loss.__name__}: autodiff={float(automatic):.6e} finite={float(finite_difference):.6e}")
+        assert np.isfinite(float(automatic))
+        assert float(automatic) != 0.0
+        # float32 + a finite step: agreement of a few percent is the expected level.
+        np.testing.assert_allclose(automatic, finite_difference, rtol=5e-2, atol=0.0)
 
 
 def test_five_deterministic_steps_match_hoomd() -> None:
@@ -276,7 +282,9 @@ def test_five_deterministic_steps_match_hoomd() -> None:
     np.testing.assert_allclose(
         jax_positions,
         hoomd_positions,
-        atol=2e-3,
-        rtol=2e-4,
+        # Five steps move particles by up to ~2.7e-3, so the tolerance must be far
+        # smaller than that. Float32 rounding accumulates to ~2e-5 at most.
+        atol=5e-5,
+        rtol=0.0,
         err_msg="Deterministic five-step trajectories diverged from HOOMD.",
     )
