@@ -28,6 +28,12 @@ from .trajectory_analysis import (
     analyze_frame,
     analyze_gsd,
 )
+from .validate_differentiability import (
+    epsilon_value_and_gradient,
+    finite_difference_epsilon_gradient,
+    make_differentiability_simulation,
+    trajectory_loss,
+)
 
 __all__ = [
     "BOX",
@@ -41,6 +47,8 @@ __all__ = [
     "PERTURBATIONS",
     "analyze_frame",
     "analyze_gsd",
+    "epsilon_value_and_gradient",
+    "finite_difference_epsilon_gradient",
     "brute_force_components",
     "build_hoomd_initial_positions",
     "build_hoomd_initial_state",
@@ -50,6 +58,8 @@ __all__ = [
     "jax_force_components",
     "make_simulation",
     "minimum_image",
+    "make_differentiability_simulation",
     "perturbed_state",
     "perturbed_positions",
+    "trajectory_loss",
 ]
