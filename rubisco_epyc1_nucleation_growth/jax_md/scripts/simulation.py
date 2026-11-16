@@ -54,7 +54,7 @@ from .constants import (
     TYPE_INDEX,
 )
 from . import forces
-from .analysis import write_analysis_outputs
+from .post_simulation_analysis import write_analysis_outputs
 from .initial_snapshot import generate_initial_coordinates
 from .output import write_gsd
 
