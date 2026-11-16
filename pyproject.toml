@@ -19,7 +19,11 @@ cuda12 = [
 ]
 
 [tool.setuptools]
-packages = ["condensate_ml"]
+packages = [
+    "condensate_ml",
+    "condensate_ml.helper",
+]
 
 [tool.setuptools.package-dir]
 condensate_ml = "rubisco_epyc1_nucleation_growth/jax_md/scripts"
+"condensate_ml.helper" = "rubisco_epyc1_nucleation_growth/jax_md/helper"

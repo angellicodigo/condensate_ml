@@ -4,7 +4,6 @@ channels:
   - nodefaults
 dependencies:
   - python>=3.10
-  - git
   - numpy
   - pandas
   - matplotlib
@@ -15,9 +14,10 @@ dependencies:
   - pip
   - pip:
     - torch
-    - git+https://github.com/CAB-Lab-Princeton/NEFI.git
     - marimo
-    - manim
     - pytest
     - "jax[cuda12]"
     - jax-md
+    - flax
+    - optax
+    - "microsim[all]"
