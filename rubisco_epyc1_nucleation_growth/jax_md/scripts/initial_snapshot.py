@@ -6,6 +6,15 @@ import numpy as np
 
 
 def make_grid_positions(n: int, box: float, margin: float) -> np.ndarray:
+    """Create the first ``n`` points of a roughly cubic grid.
+
+    Input:
+        n: Number of 3D points to return.
+        box: Length of the cubic simulation box.
+        margin: Distance kept between grid points and each box face.
+    Output:
+        A ``(n, 3)`` NumPy array of grid coordinates.
+    """
     n_side = int(np.ceil(n ** (1.0 / 3.0)))
     values = np.linspace(-box / 2.0 + margin, box / 2.0 - margin, n_side)
     points = np.array(np.meshgrid(values, values, values)).T.reshape(-1, 3)
@@ -23,7 +32,22 @@ def generate_initial_coordinates(
     patch_radius: float,
     chain_r0: float,
 ) -> np.ndarray:
-    """Return the same deterministic layout as the PyTorch implementation."""
+    """Return the deterministic initial layout used by the simulation.
+
+    Input:
+        box: Cubic periodic box length.
+        patch_dirs: Unit vectors giving the patch directions on each Rubisco.
+        seed: Seed for the small random perturbations and chain orientations.
+        n_rubisco: Number of Rubisco centers.
+        n_patches_per_rubisco: Number of patches attached to each Rubisco.
+        n_chains: Number of EPYC1 chains.
+        n_beads_per_chain: Beads in each chain.
+        patch_radius: Distance from a Rubisco center to its patches.
+        chain_r0: Spacing between consecutive chain beads.
+    Output:
+        A ``(n_particles, 3)`` float32 array ordered as Rubisco centers,
+        patches, and chain beads.
+    """
     rng = np.random.default_rng(seed)
     n_patch = n_rubisco * n_patches_per_rubisco
     n_chain = n_chains * n_beads_per_chain

@@ -12,13 +12,32 @@ CONTACT_CUTOFF = 3.0
 
 
 def _minimum_image(delta: np.ndarray, box: float) -> np.ndarray:
+    """Apply the periodic minimum-image convention to displacement vectors.
+
+    Input:
+        delta: Displacement vectors, with any leading shape and final axis 3.
+        box: Cubic periodic box length.
+    Output:
+        Displacements shifted to the nearest periodic image, with the same
+        shape as ``delta``.
+    """
     return delta - box * np.round(delta / box)
 
 
 def _union_find(n_nodes: int, edges: list[tuple[int, int]]) -> tuple[int, int, float]:
+    """Find connected components in a graph using union-find.
+
+    Input:
+        n_nodes: Number of graph nodes.
+        edges: Pairs of node IDs that should belong to the same component.
+    Output:
+        Tuple ``(n_components, largest_component_size,
+        largest_component_fraction)``.
+    """
     parent = list(range(n_nodes))
 
     def find(node: int) -> int:
+        """Return the representative root for one node with path compression."""
         while parent[node] != node:
             parent[node] = parent[parent[node]]
             node = parent[node]
@@ -40,6 +59,14 @@ def _union_find(n_nodes: int, edges: list[tuple[int, int]]) -> tuple[int, int, f
 
 
 def _contact_indices() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build global indices linking patches, stickers, chains, and Rubiscos.
+
+    Input:
+        None. The particle layout is determined by the simulation constants.
+    Output:
+        Tuple containing patch indices, sticker indices, sticker chain IDs,
+        and the Rubisco ID associated with each patch.
+    """
     patch_start = N_R
     chain_start = N_R + N_R * PATCHES
     patch_indices = np.arange(patch_start, chain_start, dtype=np.int64)
@@ -60,7 +87,17 @@ def _contact_indices() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
 
 
 def analyze_gsd(path: str | Path, dt: float, contact_cutoff: float = CONTACT_CUTOFF) -> pd.DataFrame:
-    """Analyze GSD frames and return contacts/clusters as a DataFrame."""
+    """Analyze GSD frames and return contacts/clusters as a DataFrame.
+
+    Input:
+        path: GSD trajectory to inspect.
+        dt: Simulation timestep used to convert step numbers to time.
+        contact_cutoff: Maximum periodic distance counted as a sticker-patch
+            contact.
+    Output:
+        A pandas DataFrame with one row per frame and contact, cluster, time,
+        and box-size metrics.
+    """
     import gsd.hoomd
     import pandas as pd
 
@@ -96,7 +133,14 @@ def analyze_gsd(path: str | Path, dt: float, contact_cutoff: float = CONTACT_CUT
 
 
 def write_xyz(path: str | Path, gsd_path: str | Path) -> None:
-    """Convert GSD frames to the simple XYZ format used by the HOOMD script."""
+    """Convert GSD frames to the simple XYZ format used by the HOOMD script.
+
+    Input:
+        path: Destination XYZ file.
+        gsd_path: Source GSD trajectory.
+    Output:
+        None. The function writes one XYZ block per trajectory frame.
+    """
     import gsd.hoomd
 
     path = Path(path)
@@ -113,7 +157,16 @@ def write_xyz(path: str | Path, gsd_path: str | Path) -> None:
 
 
 def write_analysis_plots(data: pd.DataFrame, plots_dir: str | Path, output_name: str) -> None:
-    """Write the four HOOMD-style metric plots."""
+    """Write one JPEG plot for each trajectory metric.
+
+    Input:
+        data: Analysis DataFrame containing ``time``, ``bonds``, ``clusters``,
+            ``fraction``, and ``largest`` columns.
+        plots_dir: Directory receiving the generated plots.
+        output_name: Prefix used in each plot filename and title.
+    Output:
+        None. Four JPEG files are written to ``plots_dir``.
+    """
     import matplotlib.pyplot as plt
 
     plots_dir = Path(plots_dir)
@@ -145,7 +198,19 @@ def write_analysis_outputs(
     dt: float,
     epsilon: float,
 ) -> pd.DataFrame:
-    """Create XYZ, CSV, and JPEG outputs from one GSD trajectory."""
+    """Create all post-simulation artifacts for one GSD trajectory.
+
+    Input:
+        gsd_path: Source trajectory.
+        xyz_path: Destination XYZ path.
+        csv_path: Destination CSV path.
+        plots_dir: Destination directory for metric plots.
+        output_name: Prefix used for plot names and titles.
+        dt: Simulation timestep.
+        epsilon: Attraction parameter to record in the CSV.
+    Output:
+        The analysis DataFrame after writing XYZ, CSV, and JPEG outputs.
+    """
     data = analyze_gsd(gsd_path, dt=dt)
     data.insert(4, "epsilon_used", epsilon)
     write_xyz(xyz_path, gsd_path)

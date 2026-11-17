@@ -59,6 +59,13 @@ from .initial_snapshot import generate_initial_coordinates
 from .output import write_gsd
 
 def kon_to_epsilon(kon: jax.Array | float) -> jax.Array | float:
+    """Convert an attraction magnitude into the signed well depth.
+
+    Input:
+        ``kon``: Attraction magnitude as a Python number or JAX array.
+    Output:
+        The negated value; negative epsilon means attraction in this model.
+    """
     return -kon
 
 
@@ -69,11 +76,24 @@ def _neighbor_coordinates(positions: jax.Array, box: float) -> jax.Array:
     silently omits every pair that crosses a periodic face, so those pairs would feel
     no steric repulsion, attraction or bond force. Forces still use the centred
     coordinates; the periodic displacement is unaffected by this shift.
+    Input:
+        ``positions``: Origin-centered coordinates.
+        ``box``: Cubic periodic box length.
+    Output:
+        Coordinates shifted into the ``[0, box)`` convention expected by the
+        JAX MD cell list.
     """
     return positions + 0.5 * box
 
 
 def _make_type_tables(dtype: Any) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Build four-by-four pair-parameter tables.
+
+    Input:
+        ``dtype``: JAX dtype used for the returned arrays.
+    Output:
+        ``(epsilon, sigma, cutoff)`` tables indexed by particle type IDs.
+    """
     epsilon = np.zeros((4, 4), dtype=np.float32)
     sigma = np.ones((4, 4), dtype=np.float32)
     cutoff = np.zeros((4, 4), dtype=np.float32)
@@ -124,6 +144,26 @@ class RubiscoEpyc1Simulation:
         output_dir: str | Path | None = None,
         output_name: str = "trajectory",
     ) -> None:
+        """Initialize topology, force tables, neighbor lists, and rollout code.
+
+        Input:
+            ``n_steps``: Number of Brownian dynamics steps per rollout.
+            ``dt``: Brownian dynamics timestep.
+            ``box``: Cubic periodic box length.
+            ``write_every``: Steps between returned trajectory frames.
+            ``seed``: Seed for initial coordinates and Brownian noise.
+            ``neighbor_buffer``: Cell-list skin distance.
+            ``dtype``: Floating-point dtype used by the JAX simulation.
+            ``checkpoint_blocks``: Whether to rematerialize scan blocks while
+                differentiating.
+            ``neighbor_extra_capacity``: Spare neighbor slots per particle.
+            ``max_capacity_retries``: Maximum neighbor-capacity retries.
+            ``output_dir``: Optional directory for host-side output files.
+            ``output_name``: Base name for generated artifacts.
+        Output:
+            None. The instance stores fixed topology and a lazily compiled
+            rollout function.
+        """
         # Unlike the PyTorch/NEFI implementation, this class is not a
         # TimeStepper subclass. The rollout below is expressed directly with
         # jax.lax.scan so JAX can compile blocks of timesteps together.
@@ -233,24 +273,48 @@ class RubiscoEpyc1Simulation:
         self._compiled_rollout = jax.jit(self._make_rollout(checkpoint_blocks))
 
     def _allocate_neighbors(self, positions: jax.Array):
-        """Allocate neighbor-list storage with spare slots (see neighbor_extra_capacity)."""
+        """Allocate neighbor-list storage for one configuration.
+
+        Input:
+            ``positions``: Current coordinates shaped ``(n_particles, 3)``.
+        Output:
+            A JAX MD dense neighbor-list object with spare capacity.
+        """
         return self.neighbor_fn.allocate(
             _neighbor_coordinates(positions, self.box), extra_capacity=self._extra_capacity
         )
 
     def _build_labels(self) -> list[str]:
-        """Return HOOMD-compatible particle labels: R, P, S, and T."""
+        """Build one HOOMD-compatible label for every particle.
+
+        Input:
+            None; particle counts and ordering come from the constants.
+        Output:
+            Labels ``R``, ``P``, ``S``, and ``T`` in particle-array order.
+        """
         labels = ["R"] * N_R + ["P"] * (N_R * PATCHES)
         labels += ["T" if b in STICKER_INDEX else "S" for b in range(N_BEADS)] * N_C
         return labels
 
     def _build_type_ids(self) -> jax.Array:
-        """Convert particle labels to integer type IDs: R=0, P=1, S=2, T=3."""
+        """Convert particle labels to integer type IDs.
+
+        Input:
+            None; labels are generated from the fixed particle topology.
+        Output:
+            Integer array shaped ``(n_particles,)`` with R=0, P=1, S=2, T=3.
+        """
         labels = self._build_labels()
         return jnp.asarray([TYPE_INDEX[label] for label in labels], dtype=jnp.int32)
 
     def _build_mobilities(self) -> jax.Array:
-        """Build mobility 1/gamma for every particle as an (N, 1) array."""
+        """Build one broadcastable mobility value for every particle.
+
+        Input:
+            None; friction coefficients come from the simulation constants.
+        Output:
+            Array shaped ``(n_particles, 1)`` containing ``1 / gamma``.
+        """
         n_slow = N_R * (1 + PATCHES)
         values = np.full(self.n_particles, 1.0 / GAMMA_CHAIN, dtype=np.float32)
         values[:n_slow] = 1.0 / GAMMA_RUBISCO
@@ -265,6 +329,11 @@ class RubiscoEpyc1Simulation:
             patch_tether: [[0, 24], [0, 25], ..., [23, 215]]
 
         ``bond_k`` and ``bond_r0`` align with the rows of ``bond_pairs``.
+
+        Input:
+            None; bond topology is determined by the fixed particle counts.
+        Output:
+            ``(bond_pairs, bond_k, bond_r0)`` for all chain and tether bonds.
         """
         chain_start = N_R + N_R * PATCHES
         chain = [[chain_start + c * N_BEADS + b, chain_start + c * N_BEADS + b + 1]
@@ -281,6 +350,11 @@ class RubiscoEpyc1Simulation:
         This is a fixed exclusion mask, not the spatial neighbor list. The
         neighbor list controls which nearby pairs are examined; this mask
         reproduces HOOMD's default bonded-pair exclusions.
+
+        Input:
+            None; the mask is built from the instance's bond table.
+        Output:
+            Boolean ``(n_particles, n_particles)`` exclusion matrix.
         """
         mask = np.ones((self.n_particles, self.n_particles), dtype=bool)
         np.fill_diagonal(mask, False)
@@ -290,7 +364,14 @@ class RubiscoEpyc1Simulation:
         return jnp.asarray(mask)
 
     def init(self, fields: Mapping[str, Any] | None = None) -> jax.Array:
-        """Initial coordinates (n_particles, 3); override with fields['positions_0']."""
+        """Return initial coordinates for a rollout.
+
+        Input:
+            ``fields``: Optional mapping. ``fields['positions_0']`` overrides
+                the generated initial snapshot when supplied.
+        Output:
+            Float array shaped ``(n_particles, 3)``.
+        """
         fields = {} if fields is None else fields
         if "positions_0" in fields:
             return jnp.asarray(fields["positions_0"], dtype=self.dtype)
@@ -317,6 +398,12 @@ class RubiscoEpyc1Simulation:
         intermediate positions while still returning frame 0 and each output
         frame.  ``jax.checkpoint`` rematerializes a block during reverse-mode
         differentiation when ``checkpoint_blocks`` is enabled.
+
+        Input:
+            ``checkpoint_blocks``: Whether to checkpoint each output interval.
+        Output:
+            A pure JAX rollout function that returns sampled frames and a
+            neighbor-list overflow flag.
         """
         neighbor_fn = self.neighbor_fn
         displacement = self.displacement
@@ -333,10 +420,18 @@ class RubiscoEpyc1Simulation:
         box = self.box
 
         def wrap_centered(positions):
+            """Wrap coordinates into the origin-centered periodic box."""
             return (positions + box * 0.5) % box - box * 0.5
 
         def one_step(carry, _):
-            """One overdamped Euler-Maruyama Brownian dynamics step."""
+            """Advance one overdamped Euler-Maruyama Brownian step.
+
+            Input:
+                ``carry``: ``(positions, neighbors, key, epsilon)`` state tuple.
+                ``_``: Unused scan index.
+            Output:
+                Updated carry and ``None`` as the per-step scan output.
+            """
             positions, neighbors, key, epsilon = carry
             neighbors = neighbors.update(_neighbor_coordinates(positions, box))
             key, noise_key = jax.random.split(key)
@@ -365,6 +460,12 @@ class RubiscoEpyc1Simulation:
             The inner scan replaces the Python timestep loop used by the
             PyTorch/NEFI TimeStepper. The outer scan returns only sampled
             frames, rather than every intermediate state.
+
+            Input:
+                ``carry``: State tuple passed through the timestep scan.
+                ``_``: Unused outer-scan index.
+            Output:
+                Updated state and the final coordinates for this block.
             """
             carry, _ = jax.lax.scan(one_step, carry, None, length=block_size)
             return carry, carry[0]
@@ -373,6 +474,17 @@ class RubiscoEpyc1Simulation:
             integrate_block = jax.checkpoint(integrate_block)
 
         def rollout(positions, epsilon, key, neighbors):
+            """Run all output blocks and return sampled frames.
+
+            Input:
+                ``positions``: Initial coordinates.
+                ``epsilon``: Signed sticker-patch attraction strength.
+                ``key``: JAX PRNG key for Brownian noise.
+                ``neighbors``: Preallocated dense neighbor list.
+            Output:
+                ``(frames, overflow)`` with frames shaped
+                ``(n_frames, n_particles, 3)``.
+            """
             carry = (positions, neighbors, key, epsilon)
             carry, block_frames = jax.lax.scan(integrate_block, carry, None, length=n_blocks)
             # The overflow flag is sticky: True if ANY update in the run lost neighbors.
@@ -391,6 +503,12 @@ class RubiscoEpyc1Simulation:
         The neighbor list is allocated and updated for this configuration, so
         this method is convenient for reference checks but should not be used
         inside a timestep loop. The compiled rollout reuses the list instead.
+
+        Input:
+            ``positions``: One configuration shaped ``(n_particles, 3)``.
+            ``epsilon``: Signed sticker-patch attraction strength.
+        Output:
+            Total force array shaped ``(n_particles, 3)``.
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
         epsilon = jnp.asarray(epsilon, dtype=self.dtype)
@@ -426,6 +544,14 @@ class RubiscoEpyc1Simulation:
         implementation makes a controlled integrator comparison possible. If
         it is omitted, this method uses a zero-noise deterministic step; the
         normal stochastic rollout generates and carries its own JAX PRNG keys.
+
+        Input:
+            ``positions``: Starting coordinates shaped ``(n_particles, 3)``.
+            ``epsilon``: Signed sticker-patch attraction strength.
+            ``noise``: Optional precomputed Brownian displacement with the same
+                shape as ``positions``.
+        Output:
+            Coordinates after one wrapped Brownian dynamics step.
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
         force = self.compute_forces(positions, epsilon)
@@ -435,7 +561,13 @@ class RubiscoEpyc1Simulation:
         )
 
     def _wrap_centered(self, positions: jax.Array) -> jax.Array:
-        """Wrap positions into the same origin-centered box as the HOOMD script."""
+        """Wrap positions into the origin-centered periodic box.
+
+        Input:
+            ``positions``: Coordinates in any periodic image.
+        Output:
+            Coordinates mapped to ``[-box / 2, box / 2)`` with the same shape.
+        """
         return (positions + self.box * 0.5) % self.box - self.box * 0.5
 
     def compute_force_components(
@@ -446,6 +578,13 @@ class RubiscoEpyc1Simulation:
         This is useful when validating the JAX implementation against HOOMD:
         the four returned entries have shape ``(n_particles, 3)`` and can be
         compared component by component before comparing the total.
+
+        Input:
+            ``positions``: One configuration shaped ``(n_particles, 3)``.
+            ``epsilon``: Signed sticker-patch attraction strength.
+        Output:
+            Dictionary containing ``steric``, ``sticker_patch``, ``bonded``,
+            and ``total`` force arrays.
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
         epsilon = jnp.asarray(epsilon, dtype=self.dtype)
@@ -481,6 +620,12 @@ class RubiscoEpyc1Simulation:
         ``fields["positions_0"]`` overrides the generated initial snapshot.
         The returned array contains frame 0 followed by frames at every
         ``write_every`` steps.
+
+        Input:
+            ``fields``: Mapping containing required ``epsilon`` and optional
+                ``positions_0``.
+        Output:
+            Sampled trajectory shaped ``(n_frames, n_particles, 3)``.
         """
         epsilon = fields.get("epsilon")
         if epsilon is None:
@@ -520,6 +665,13 @@ class RubiscoEpyc1Simulation:
         If ``path`` is omitted, ``output_dir/output_name.gsd`` is used. This
         explicit method is also the recommended way to write a trajectory
         produced inside a differentiated or transformed JAX function.
+
+        Input:
+            ``trajectory``: Frames shaped ``(n_frames, n_particles, 3)``.
+            ``path``: Optional output path; otherwise the configured directory
+                and name are used.
+        Output:
+            Path to the written GSD file.
         """
         if path is None:
             if self.output_dir is None:
@@ -542,7 +694,13 @@ class RubiscoEpyc1Simulation:
         )
 
     def _artifact_directories(self) -> dict[str, Path]:
-        """Return device-specific artifact directories under ``output_dir``."""
+        """Create and return device-specific artifact directories.
+
+        Input:
+            None; ``output_dir`` must be configured on the instance.
+        Output:
+            Mapping for trajectory, XYZ, CSV, and plot directories.
+        """
         if self.output_dir is None:
             raise ValueError("output_dir is not configured")
         device_label = "gpu" if any(device.platform == "gpu" for device in jax.devices()) else "cpu"
@@ -557,7 +715,14 @@ class RubiscoEpyc1Simulation:
         return directories
 
     def _write_output_if_requested(self, trajectory: jax.Array, epsilon: Any) -> jax.Array:
-        """Write ordinary forward results without interfering with JAX transforms."""
+        """Write host-side artifacts for ordinary forward calls.
+
+        Input:
+            ``trajectory``: Returned rollout frames.
+            ``epsilon``: Attraction parameter recorded in analysis output.
+        Output:
+            The unchanged trajectory.
+        """
         if self.output_dir is not None and not isinstance(trajectory, jax.core.Tracer):
             directories = self._artifact_directories()
             gsd_path = self.write_gsd(trajectory)
@@ -573,7 +738,15 @@ class RubiscoEpyc1Simulation:
         return trajectory
 
     def rollout(self, epsilon: Any, positions_0: Any | None = None, seed: int | None = None) -> jax.Array:
-        """Convenience API equivalent to ``stepper({'epsilon': epsilon})``."""
+        """Run a rollout using a compact convenience API.
+
+        Input:
+            ``epsilon``: Signed sticker-patch attraction strength.
+            ``positions_0``: Optional initial coordinates.
+            ``seed``: Optional temporary PRNG seed for this call.
+        Output:
+            Sampled trajectory shaped ``(n_frames, n_particles, 3)``.
+        """
         fields = {"epsilon": epsilon}
         if positions_0 is not None:
             fields["positions_0"] = positions_0

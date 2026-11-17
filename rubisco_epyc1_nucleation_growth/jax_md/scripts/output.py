@@ -19,7 +19,22 @@ def write_gsd(
     particle_types: tuple[str, ...] = ("R", "P", "S", "T"),
     bond_types: tuple[str, ...] = ("chain", "patch_tether"),
 ) -> Path:
-    """Write sampled positions to a HOOMD-compatible GSD file."""
+    """Write sampled positions to a HOOMD-compatible GSD file.
+
+    Input:
+        path: Destination GSD path.
+        trajectory: Frames shaped ``(n_frames, n_particles, 3)``.
+        box: Cubic simulation-box length.
+        particle_type_ids: Integer type ID for every particle.
+        bond_pairs: Bond endpoint indices shaped ``(n_bonds, 2)``.
+        write_every: Number of simulation steps between saved frames.
+        bond_type_ids: Integer bond type ID for every bond.
+        particle_types: Names corresponding to particle type IDs.
+        bond_types: Names corresponding to bond type IDs.
+    Output:
+        The destination path as a ``pathlib.Path``. The function also writes
+        the trajectory to disk as a side effect.
+    """
     try:
         import gsd.hoomd
     except ImportError as error:  # pragma: no cover - environment dependent

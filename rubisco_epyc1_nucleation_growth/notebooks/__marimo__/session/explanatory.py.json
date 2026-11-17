@@ -1,0 +1,233 @@
+{
+  "version": "1",
+  "metadata": {
+    "marimo_version": "0.25.2",
+    "script_metadata_hash": "725d092618847af0e5fa6769b12f4014"
+  },
+  "cells": [
+    {
+      "id": "Hbol",
+      "code_hash": "9fc3655566581454f81344e41d757e34",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "MJUe",
+      "code_hash": "6bb4e247a5f9b7810e84536a19ede4fe",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"purpose\">Purpose</h1>\n<span class=\"paragraph\">The purpose of this notebook is to:</span>\n<ol>\n<li>Explain how the code in the \"simulate_hoomd_patchy_full.py\" works</li>\n<li>Explain the physics involved in modeling the pyrenoid and cholorplast.</li>\n<li>Explain how we translated \"simulate_hood_patchy_full.py\" into a differentiable version of the original simulation.</li>\n</ol>\n<span class=\"paragraph\">We will start by analyzing lines of code in the \"simulate_hood_patchy_full.py\" file. The Python cells below will consist of code copied from the \"simulate_hood_patchy_full.py\" file.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "vblA",
+      "code_hash": "e0471b9fce15fd632172bad36289429f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "bkHC",
+      "code_hash": "d0c3f07f72e84422936371d669b91c4e",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">Each parameter in \"params\" represents a different regime, or a specific stage of behavior in the system.</span>\n<ul>\n<li>Control: no binding between molecules, which leads to no condensate formations. This serves as a reference point.</li>\n<li>Early: small number of condensates start to form, but are sparse and unstable. There is a constant rate of condensate formation.</li>\n<li>Nucleation: condensates starts to become more stable. The rate of condesate formations increases sharply.</li>\n<li>Weak/Early Coarsening: smaller condensates start connecting to each other to form a larger connected component. The rate of condensate formation starts to decline.</li>\n<li>Coarsening: a highly and unified connected network. The rate of condensate formations rapidly declines to near 0.</li>\n</ul>\n<span class=\"paragraph\">Each regime follows different physics and can be modeled by plotting the number of clusters over time.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "lEQa",
+      "code_hash": "864385c2cc4c282124f6263595188f29",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "PKri",
+      "code_hash": "2af18cfc3d64a897aaf9bd36ea4cd7be",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Xref",
+      "code_hash": "2debd3497d03035d526853d93c0d5541",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "SFPL",
+      "code_hash": "ca4912a747554012b55ec19eb594b02c",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "BYtC",
+      "code_hash": "e19ae6ad7894c7abf5f5e690c87be20d",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">Here we are treating the particles as patchy particles. This means that the Rubisco has a core center (R) and highly interactive surface patches (P) tethered to the center.</span>\n<span class=\"paragraph\"><div class=\"language-scdoc codehilite\"><pre><span></span><code>patch_dirs = np.array(\n    [\n        [1, 1, 1],\n        [1, 1, -1],\n        [1, -1, 1],\n        [1, -1, -1],\n        [-1, 1, 1],\n        [-1, 1, -1],\n        [-1, -1, 1],\n        [-1, -1, -1],\n    ]\n)\n</code></pre></div>\nIn this matrix, each row is 8 3D directional vectors pointing at the 8 corners of the cube. We normalized these directional vectors to unit length.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "RGSE",
+      "code_hash": "3c56b58d4f0bca26c0fa283d78fdfc8f",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Kclp",
+      "code_hash": "2a8050b68a3f790ae670285b772b48dd",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "emfo",
+      "code_hash": "7325bf189687aa3deb9980205f38291a",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Hstk",
+      "code_hash": "78863fe6f6a1b830d926bcca4da7241d",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "nWHF",
+      "code_hash": "c4328b9095e2abd02e8caa4748441515",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">Remember that\n<div class=\"language-scdoc codehilite\"><pre><span></span><code>PATCH_EPSILON = -abs(KON)\n</code></pre></div>\nBecause it's negative, the Gaussian force between a Rubisco surface patch and a EPYC1 sticker bead is attractive, not repulsive like the previous Python cell.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "iLit",
+      "code_hash": "70de30d136ed06de3699fbcb0253c213",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ZHCJ",
+      "code_hash": "eaafdeb4f2095b7ad057cd31aa3a3f92",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ROlb",
+      "code_hash": "af4503d3abc90722f2aa516019187bb4",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><span class=\"paragraph\">The rest of the code involves running the simulation\n<div class=\"language-scdoc codehilite\"><pre><span></span><code>sim.run(N_STEPS)\n</code></pre></div>\nand saving the results in four different folders.</span>\n<ul>\n<li>CSV timecourses with<ul>\n<li>step</li>\n<li>time</li>\n<li>sigma</li>\n<li>lambda</li>\n<li>eta</li>\n<li>number of clusters</li>\n<li>largest cluster size</li>\n<li>largest cluster fraction</li>\n<li>number of bonds.</li>\n</ul>\n</li>\n<li>JPEG plots of each of those main observables.</li>\n<li>GSD files that store the trajectories of each particle in the HOOMD simulation</li>\n<li>XYZ trajectories with particle types:<ul>\n<li>R = Rubisco</li>\n<li>S = spacer</li>\n<li>T = sticker</li>\n</ul>\n</li>\n</ul>\n<span class=\"paragraph\">Let's look at the images. When we make this simulation differentiable, we can use these files from the original simulation to validate our results of the new simulation.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "qnkX",
+      "code_hash": "10efb9361c4ad9bf0bd35a8845b1f720",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "TqIu",
+      "code_hash": "555d67ed4a57855a6c764462fd810ddb",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"differentiable-simulation\">Differentiable Simulation</h1>\n<span class=\"paragraph\">To make this simulation differentiable, we will use a Python package called \"jax-md\" (<a href=\"https://github.com/jax-md/jax-md\" rel=\"noopener noreferrer\" target=\"_blank\">https://github.com/jax-md/jax-md</a>). JAX is a Python library by Google that accelerates numerical linear algebra computations. The code is implemented in <code>RubiscoEpyc1Simulation</code> that can be imported by doing <code>from condensate_ml import RubiscoEpyc1Simulation</code>. I already ran <code>RubiscoEpyc1Simulation</code> with each regime in <code>params_lst</code> and saved plots in <code>os.getenv(\"plots_jaxmd_gpu\")</code>.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "Vxnm",
+      "code_hash": "483c43d9063c3ec985657e77e97601a7",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "DnEU",
+      "code_hash": "3c4a3f443012ce5478c621d9225e153b",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ulZA",
+      "code_hash": "e4e9dc3896a6173d38f9c7e3081e1e0c",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ecfG",
+      "code_hash": "25ce58f8276f0ccc7ab6a6baf3e62ba0",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "Pvdt",
+      "code_hash": "f6ae53db7936d44a04bc2d6fc95d1ca6",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "ZBYS",
+      "code_hash": "ebdecc9ab255f141064347ef7c1f4587",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"how-is-this-simulation-used-with-a-machine-learning-model\">How is this simulation used with a Machine Learning model?</h1>\n<span class=\"paragraph\">The consequence of using JAX MD is that JAX uses JAX arrays instead of Pytorch tensors. Below is an example of a JAX neural network passing its output into our simulation. Here we use the package <code>flax</code> to easily create a JAX neural network, and <code>optax</code> package for optimizing said neural network. These two packages make creating a neural network similar if we just used Pytorch.</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "aLJB",
+      "code_hash": "a246b185c30531420030543758852585",
+      "outputs": [],
+      "console": []
+    },
+    {
+      "id": "nHfw",
+      "code_hash": "226a91a388d46fe73876056cf0e31c6c",
+      "outputs": [
+        {
+          "type": "data",
+          "data": {
+            "text/markdown": "<span class=\"markdown prose dark:prose-invert contents\"><h1 id=\"confocal-images\">Confocal Images</h1>\n<span class=\"paragraph\">We can convert an instance of the JAX MD simulation into a confocal image using the <code>microsim</code> package (<a href=\"https://github.com/tlambert03/microsim\" rel=\"noopener noreferrer\" target=\"_blank\">https://github.com/tlambert03/microsim</a>).</span></span>"
+          }
+        }
+      ],
+      "console": []
+    },
+    {
+      "id": "xXTn",
+      "code_hash": "13bc0572750e983135da41551e3d5737",
+      "outputs": [],
+      "console": []
+    }
+  ]
+}
