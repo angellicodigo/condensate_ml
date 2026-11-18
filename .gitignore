@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+/extra/
+/.pytest_cache/
+.gitignore
+/jobs/
+.env

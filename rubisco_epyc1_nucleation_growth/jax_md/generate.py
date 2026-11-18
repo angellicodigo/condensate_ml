@@ -18,46 +18,11 @@ if output_dir is None:
 
 
 params_list = [
-    {
-        "name": "control",
-        "BOX": 40,
-        "EPS": 0.5,
-        "N_STEPS": 100000,
-        "WRITE_EVERY": 500,
-        "SEED": 101,
-    },
-    {
-        "name": "early",
-        "BOX": 36,
-        "EPS": 0.8,
-        "N_STEPS": 100000,
-        "WRITE_EVERY": 500,
-        "SEED": 102,
-    },
-    {
-        "name": "nucleation",
-        "BOX": 33,
-        "EPS": 1.2,
-        "N_STEPS": 100000,
-        "WRITE_EVERY": 500,
-        "SEED": 103,
-    },
-    {
-        "name": "weak_coarsening",
-        "BOX": 31,
-        "EPS": 1.8,
-        "N_STEPS": 100000,
-        "WRITE_EVERY": 500,
-        "SEED": 104,
-    },
-    {
-        "name": "coarsening",
-        "BOX": 29,
-        "EPS": 2.5,
-        "N_STEPS": 100000,
-        "WRITE_EVERY": 500,
-        "SEED": 105,
-    },
+    {"name": "control", "BOX": 40, "EPS": 0.5, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 101},
+    {"name": "early", "BOX": 36, "EPS": 0.8, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 102},
+    {"name": "nucleation", "BOX": 33, "EPS": 1.2, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 103},
+    {"name": "weak_coarsening", "BOX": 31, "EPS": 1.8, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 104},
+    {"name": "coarsening", "BOX": 29, "EPS": 2.5, "N_STEPS": 100000, "WRITE_EVERY": 500, "SEED": 105},
 ]
 
 
@@ -66,14 +31,7 @@ elapsed_by_scenario = {}
 
 for params in params_list:
     name = params["name"]
-
-    print(
-        f"Starting {name}: "
-        f"BOX={params['BOX']}, "
-        f"EPS={params['EPS']}, "
-        f"SEED={params['SEED']}"
-    )
-
+    print(f"Starting {name}: BOX={params['BOX']}, EPS={params['EPS']}, SEED={params['SEED']}")
     simulation = RubiscoEpyc1Simulation(
         n_steps=params["N_STEPS"],
         box=params["BOX"],
@@ -83,38 +41,16 @@ for params in params_list:
         output_dir=output_dir,
         output_name=name,
     )
-
-    # EPS is a positive binding strength.
-    # The simulation expects signed epsilon:
-    # negative epsilon = attraction.
-    epsilon = jnp.asarray(
-        -params["EPS"],
-        dtype=jnp.float32,
-    )
-
+    epsilon = jnp.asarray(params["EPS"], dtype=jnp.float32)
     start = time.perf_counter()
-
-    trajectory = simulation({
-        "epsilon": epsilon,
-    })
-
-    # Ensure asynchronous accelerator work has completed.
+    trajectory = simulation({"epsilon": epsilon})
     trajectory.block_until_ready()
-
     elapsed = time.perf_counter() - start
-
     trajectories[name] = trajectory
     elapsed_by_scenario[name] = elapsed
-
     expected_frames = params["N_STEPS"] // params["WRITE_EVERY"] + 1
-
     print(
         f"Finished {name} in {elapsed:.2f} seconds. "
-        f"Shape={trajectory.shape}, "
-        f"expected_frames={expected_frames}"
+        f"Shape={trajectory.shape}, expected_frames={expected_frames}"
     )
-
-    print(
-        f"GSD written to: "
-        f"{Path(output_dir) / f'{name}.gsd'}"
-    )
+    print(f"GSD written to: {Path(output_dir) / f'{name}.gsd'}")

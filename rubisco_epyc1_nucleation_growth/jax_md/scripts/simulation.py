@@ -8,14 +8,14 @@ Importing this module has no side effects. Typical use from an ML training scrip
 
     stepper = RubiscoEpyc1Simulation(n_steps=2000, box=35.0,
                                      write_every=100, seed=0)
-    epsilon = -jax.nn.softplus(features)       # attractive => negative
+    epsilon = jax.nn.softplus(features)        # positive binding strength
     trajectory = stepper({"epsilon": epsilon}) # (T, 792, 3), differentiable
     loss = loss_fn(trajectory)
     loss, grad = jax.value_and_grad(loss_fn)(epsilon)
 
-Sign convention: ``epsilon`` is the signed Gaussian well depth of the sticker-patch pair
-potential. NEGATIVE = attractive (this is -|KON| in the HOOMD script). A positive value
-silently turns the sticker-patch interaction repulsive.
+The public ``epsilon`` parameter is the positive sticker-patch binding strength.
+It is converted internally to the negative Gaussian well depth required for
+attraction by the HOOMD Gaussian-potential sign convention.
 
 This module is a separate JAX MD implementation of the PyTorch/NEFI stepper. It uses
 JAX MD's cell-list neighbor list and ``jax.lax.scan`` rather than NEFI's generic Python
@@ -35,11 +35,9 @@ import numpy as np
 from jax_md import partition, space
 
 from .constants import (
-    CHAIN_K,
     CHAIN_R0,
     DT,
-    GAMMA_CHAIN,
-    GAMMA_RUBISCO,
+    KBT,
     N_BEADS,
     N_C,
     N_R,
@@ -47,61 +45,25 @@ from .constants import (
     PATCH_RADIUS,
     PATCH_RCUT,
     PATCH_SIGMA,
-    PATCH_TETHER_K,
     PATCHES,
-    STERIC_PAIR_PARAMS,
     STICKER_INDEX,
-    TYPE_INDEX,
 )
 from . import forces
 from .post_simulation_analysis import write_analysis_outputs
 from .initial_snapshot import generate_initial_coordinates
+from .neighbor_list import allocate_neighbors, shift_to_neighbor_list_coordinates
 from .output import write_gsd
+from .topology import (
+    build_bond_data,
+    build_bond_exclusion_mask,
+    build_particle_indices,
+    build_particle_labels,
+    build_particle_mobilities,
+    build_particle_type_ids,
+    build_steric_parameter_tables,
+)
 
-def kon_to_epsilon(kon: jax.Array | float) -> jax.Array | float:
-    """Convert an attraction magnitude into the signed well depth.
-
-    Input:
-        ``kon``: Attraction magnitude as a Python number or JAX array.
-    Output:
-        The negated value; negative epsilon means attraction in this model.
-    """
-    return -kon
-
-
-def _neighbor_coordinates(positions: jax.Array, box: float) -> jax.Array:
-    """Shift origin-centred coordinates [-L/2, L/2) into [0, L) for the neighbor list.
-
-    JAX MD's cell list assumes coordinates in [0, L). Given negative coordinates it
-    silently omits every pair that crosses a periodic face, so those pairs would feel
-    no steric repulsion, attraction or bond force. Forces still use the centred
-    coordinates; the periodic displacement is unaffected by this shift.
-    Input:
-        ``positions``: Origin-centered coordinates.
-        ``box``: Cubic periodic box length.
-    Output:
-        Coordinates shifted into the ``[0, box)`` convention expected by the
-        JAX MD cell list.
-    """
-    return positions + 0.5 * box
-
-
-def _make_type_tables(dtype: Any) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """Build four-by-four pair-parameter tables.
-
-    Input:
-        ``dtype``: JAX dtype used for the returned arrays.
-    Output:
-        ``(epsilon, sigma, cutoff)`` tables indexed by particle type IDs.
-    """
-    epsilon = np.zeros((4, 4), dtype=np.float32)
-    sigma = np.ones((4, 4), dtype=np.float32)
-    cutoff = np.zeros((4, 4), dtype=np.float32)
-    for (a, b), values in STERIC_PAIR_PARAMS.items():
-        i, j = TYPE_INDEX[a], TYPE_INDEX[b]
-        for x, y in ((i, j), (j, i)):
-            epsilon[x, y], sigma[x, y], cutoff[x, y] = values
-    return tuple(jnp.asarray(x, dtype=dtype) for x in (epsilon, sigma, cutoff))
+__all__ = ["RubiscoEpyc1Simulation"]
 
 
 class RubiscoEpyc1Simulation:
@@ -124,9 +86,8 @@ class RubiscoEpyc1Simulation:
     dtype, device, and timestep settings reuse the compiled executable.
 
     If ``output_dir`` is supplied, ordinary forward calls write sampled frames
-    to ``output_dir / output_name.gsd``. GSD writing is a host-side side effect
-    and is skipped inside JAX transformations; use :meth:`write_gsd` explicitly
-    for trajectories returned by differentiated code.
+    and analysis artifacts to device-specific subdirectories. GSD writing is a
+    host-side side effect and is skipped inside JAX transformations.
     """
 
     def __init__(
@@ -143,12 +104,15 @@ class RubiscoEpyc1Simulation:
         max_capacity_retries: int = 3,
         output_dir: str | Path | None = None,
         output_name: str = "trajectory",
+        kT: float = KBT,
     ) -> None:
         """Initialize topology, force tables, neighbor lists, and rollout code.
 
         Input:
             ``n_steps``: Number of Brownian dynamics steps per rollout.
             ``dt``: Brownian dynamics timestep.
+            ``kT``: Thermal energy in reduced units. The reference model uses
+                ``kT=1``.
             ``box``: Cubic periodic box length.
             ``write_every``: Steps between returned trajectory frames.
             ``seed``: Seed for initial coordinates and Brownian noise.
@@ -183,8 +147,11 @@ class RubiscoEpyc1Simulation:
         #                   repeated with doubled capacity up to this many times.
         if n_steps < 0 or write_every < 1 or n_steps % write_every:
             raise ValueError("n_steps must be nonnegative and divisible by write_every")
+        if kT < 0:
+            raise ValueError("kT must be nonnegative")
         self.n_steps = int(n_steps)
         self.dt = float(dt)
+        self.kT = float(kT)
         self.box = float(box)
         self.write_every = int(write_every)
         self.seed = int(seed)
@@ -216,7 +183,7 @@ class RubiscoEpyc1Simulation:
         #
         # build_particle_type_ids() converts those labels to integer IDs:
         #     R=0, P=1, S=2, T=3
-        self.type_ids = self._build_type_ids()
+        self.type_ids = build_particle_type_ids()
         self.particle_type_ids = self.type_ids
 
         # build_mobilities() returns mobility 1/gamma for every particle as an
@@ -224,33 +191,33 @@ class RubiscoEpyc1Simulation:
         #
         #     GAMMA_RUBISCO = brownian.gamma["R"] = brownian.gamma["P"] = 5.0
         #     GAMMA_CHAIN   = brownian.gamma["S"] = brownian.gamma["T"] = 1.0
-        self.mobilities = self._build_mobilities()
+        self.mobilities = build_particle_mobilities(self.n_particles, self.dtype)
 
         # build_bonds() packs two topology groups into one table:
         #     chain:        n_chains * (n_beads_per_chain - 1) = 528 bonds
         #     patch_tether: n_rubisco * n_patches_per_rubisco = 192 bonds
         # This packed representation avoids a separate force/scatter pass for
         # each bond type.
-        self.bond_pairs, self.bond_k, self.bond_r0 = self._build_bonds()
+        self.bond_pairs, self.bond_k, self.bond_r0 = build_bond_data(self.dtype)
 
-        # _make_type_tables() builds the 4-by-4 type-level interaction tables
+        # build_steric_parameter_tables() builds the 4-by-4 type-level tables
         # for the Gaussian steric forces. Unlike the PyTorch implementation,
         # these stay at type-level size and are gathered for neighbor pairs:
         #     epsilon_table[type_i, type_j] -> pair repulsion strength
         #     sigma_table[type_i, type_j]   -> pair width
         #     cutoff_table[type_i, type_j]  -> pair cutoff
-        self.nonbonded_pair_mask = self._build_exclusion_mask()
-        self.epsilon_table, self.sigma_table, self.cutoff_table = _make_type_tables(dtype)
+        self.nonbonded_pair_mask = build_bond_exclusion_mask(self.n_particles, self.bond_pairs)
+        self.epsilon_table, self.sigma_table, self.cutoff_table = build_steric_parameter_tables(dtype)
 
         # Global particle indices used by analysis and by the sticker-patch
         # interaction. There are 192 patches and 6 stickers per chain.
-        self.patch_indices = jnp.arange(N_R, N_R + N_R * PATCHES, dtype=jnp.int32)
-        chain_start = N_R + N_R * PATCHES
-        sticker_indices = [chain_start + c * N_BEADS + b for c in range(N_C) for b in STICKER_INDEX]
-        self.sticker_indices = jnp.asarray(sticker_indices, dtype=jnp.int32)
-        self.patch_rubisco_ids = jnp.repeat(jnp.arange(N_R, dtype=jnp.int32), PATCHES)
-        self.sticker_chain_ids = jnp.repeat(jnp.arange(N_C, dtype=jnp.int32), len(STICKER_INDEX))
-        self.particle_labels = self._build_labels()
+        (
+            self.patch_indices,
+            self.sticker_indices,
+            self.patch_rubisco_ids,
+            self.sticker_chain_ids,
+        ) = build_particle_indices()
+        self.particle_labels = build_particle_labels()
 
         # JAX MD supplies the periodic minimum-image displacement function.
         # Its displacement function operates on individual vectors; forces.py
@@ -280,88 +247,9 @@ class RubiscoEpyc1Simulation:
         Output:
             A JAX MD dense neighbor-list object with spare capacity.
         """
-        return self.neighbor_fn.allocate(
-            _neighbor_coordinates(positions, self.box), extra_capacity=self._extra_capacity
+        return allocate_neighbors(
+            self.neighbor_fn, positions, self.box, self._extra_capacity
         )
-
-    def _build_labels(self) -> list[str]:
-        """Build one HOOMD-compatible label for every particle.
-
-        Input:
-            None; particle counts and ordering come from the constants.
-        Output:
-            Labels ``R``, ``P``, ``S``, and ``T`` in particle-array order.
-        """
-        labels = ["R"] * N_R + ["P"] * (N_R * PATCHES)
-        labels += ["T" if b in STICKER_INDEX else "S" for b in range(N_BEADS)] * N_C
-        return labels
-
-    def _build_type_ids(self) -> jax.Array:
-        """Convert particle labels to integer type IDs.
-
-        Input:
-            None; labels are generated from the fixed particle topology.
-        Output:
-            Integer array shaped ``(n_particles,)`` with R=0, P=1, S=2, T=3.
-        """
-        labels = self._build_labels()
-        return jnp.asarray([TYPE_INDEX[label] for label in labels], dtype=jnp.int32)
-
-    def _build_mobilities(self) -> jax.Array:
-        """Build one broadcastable mobility value for every particle.
-
-        Input:
-            None; friction coefficients come from the simulation constants.
-        Output:
-            Array shaped ``(n_particles, 1)`` containing ``1 / gamma``.
-        """
-        n_slow = N_R * (1 + PATCHES)
-        values = np.full(self.n_particles, 1.0 / GAMMA_CHAIN, dtype=np.float32)
-        values[:n_slow] = 1.0 / GAMMA_RUBISCO
-        return jnp.asarray(values[:, None], dtype=self.dtype)
-
-    def _build_bonds(self) -> tuple[jax.Array, jax.Array, jax.Array]:
-        """Build one packed bond table for chain and patch-tether bonds.
-
-        The equivalent HOOMD topology is:
-
-            chain: [[216, 217], [217, 218], ..., [790, 791]]
-            patch_tether: [[0, 24], [0, 25], ..., [23, 215]]
-
-        ``bond_k`` and ``bond_r0`` align with the rows of ``bond_pairs``.
-
-        Input:
-            None; bond topology is determined by the fixed particle counts.
-        Output:
-            ``(bond_pairs, bond_k, bond_r0)`` for all chain and tether bonds.
-        """
-        chain_start = N_R + N_R * PATCHES
-        chain = [[chain_start + c * N_BEADS + b, chain_start + c * N_BEADS + b + 1]
-                 for c in range(N_C) for b in range(N_BEADS - 1)]
-        tether = [[r, N_R + r * PATCHES + p] for r in range(N_R) for p in range(PATCHES)]
-        pairs = jnp.asarray(chain + tether, dtype=jnp.int32)
-        k = jnp.asarray([CHAIN_K] * len(chain) + [PATCH_TETHER_K] * len(tether), dtype=self.dtype)
-        r0 = jnp.asarray([CHAIN_R0] * len(chain) + [PATCH_RADIUS] * len(tether), dtype=self.dtype)
-        return pairs, k, r0
-
-    def _build_exclusion_mask(self) -> jax.Array:
-        """Exclude self-pairs and directly bonded pairs from steric forces.
-
-        This is a fixed exclusion mask, not the spatial neighbor list. The
-        neighbor list controls which nearby pairs are examined; this mask
-        reproduces HOOMD's default bonded-pair exclusions.
-
-        Input:
-            None; the mask is built from the instance's bond table.
-        Output:
-            Boolean ``(n_particles, n_particles)`` exclusion matrix.
-        """
-        mask = np.ones((self.n_particles, self.n_particles), dtype=bool)
-        np.fill_diagonal(mask, False)
-        pairs = np.asarray(self.bond_pairs)
-        mask[pairs[:, 0], pairs[:, 1]] = False
-        mask[pairs[:, 1], pairs[:, 0]] = False
-        return jnp.asarray(mask)
 
     def init(self, fields: Mapping[str, Any] | None = None) -> jax.Array:
         """Return initial coordinates for a rollout.
@@ -408,6 +296,7 @@ class RubiscoEpyc1Simulation:
         neighbor_fn = self.neighbor_fn
         displacement = self.displacement
         dt = self.dt
+        kT = self.kT
         block_size = self.write_every
         n_blocks = self.n_steps // self.write_every
         mobility = self.mobilities
@@ -433,24 +322,26 @@ class RubiscoEpyc1Simulation:
                 Updated carry and ``None`` as the per-step scan output.
             """
             positions, neighbors, key, epsilon = carry
-            neighbors = neighbors.update(_neighbor_coordinates(positions, box))
+            neighbors = neighbors.update(shift_to_neighbor_list_coordinates(positions, box))
             key, noise_key = jax.random.split(key)
 
             # Compute the three physical force contributions. The Gaussian
-            # attraction uses the signed epsilon supplied by the caller:
-            # negative epsilon is attractive, positive epsilon is repulsive.
-            total = forces.total_forces(
+            # attraction uses the signed internal epsilon. Public callers pass
+            # a positive binding strength, which is converted to a negative
+            # Gaussian depth before reaching this compiled function.
+            total = forces.calculate_total_force(
                 positions, neighbors.idx, type_ids, epsilon_table, sigma_table,
                 cutoff_table, exclusions, bond_pairs, bond_k, bond_r0,
                 epsilon, PATCH_SIGMA, PATCH_RCUT, displacement,
             )
-            # kT = 1, so D = mobility and the Brownian displacement has
-            # standard deviation sqrt(2 * D * dt).
-            noise = jnp.sqrt(2.0 * mobility * dt) * jax.random.normal(
+            # Einstein relation: D_i = kT / gamma_i = kT * mobility_i.
+            # Euler-Maruyama for overdamped Langevin dynamics therefore adds
+            # sqrt(2 * D_i * dt) times a standard normal vector.
+            noise = jnp.sqrt(2.0 * kT * mobility * dt) * jax.random.normal(
                 noise_key, positions.shape, dtype=positions.dtype
             )
-            # This is the overdamped Brownian update:
-            # x_new = x + mobility * force * dt + noise.
+            # Overdamped Langevin Euler-Maruyama update:
+            # x_new = x + (force / gamma) * dt + sqrt(2 D dt) * eta.
             next_positions = wrap_centered(positions + mobility * total * dt + noise)
             return (next_positions, neighbors, key, epsilon), None
 
@@ -478,7 +369,7 @@ class RubiscoEpyc1Simulation:
 
             Input:
                 ``positions``: Initial coordinates.
-                ``epsilon``: Signed sticker-patch attraction strength.
+                ``epsilon``: Positive sticker-patch binding strength.
                 ``key``: JAX PRNG key for Brownian noise.
                 ``neighbors``: Preallocated dense neighbor list.
             Output:
@@ -506,15 +397,15 @@ class RubiscoEpyc1Simulation:
 
         Input:
             ``positions``: One configuration shaped ``(n_particles, 3)``.
-            ``epsilon``: Signed sticker-patch attraction strength.
+            ``epsilon``: Positive sticker-patch binding strength.
         Output:
             Total force array shaped ``(n_particles, 3)``.
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
-        epsilon = jnp.asarray(epsilon, dtype=self.dtype)
-        shifted = _neighbor_coordinates(positions, self.box)
+        epsilon = self._signed_attraction_epsilon(epsilon)
+        shifted = shift_to_neighbor_list_coordinates(positions, self.box)
         neighbors = self._allocate_neighbors(positions).update(shifted)
-        return forces.total_forces(
+        return forces.calculate_total_force(
             positions,
             neighbors.idx,
             self.type_ids,
@@ -547,7 +438,7 @@ class RubiscoEpyc1Simulation:
 
         Input:
             ``positions``: Starting coordinates shaped ``(n_particles, 3)``.
-            ``epsilon``: Signed sticker-patch attraction strength.
+            ``epsilon``: Positive sticker-patch binding strength.
             ``noise``: Optional precomputed Brownian displacement with the same
                 shape as ``positions``.
         Output:
@@ -570,6 +461,10 @@ class RubiscoEpyc1Simulation:
         """
         return (positions + self.box * 0.5) % self.box - self.box * 0.5
 
+    def _signed_attraction_epsilon(self, binding_strength: Any) -> jax.Array:
+        """Convert a binding magnitude to the signed attractive well depth."""
+        return -jnp.abs(jnp.asarray(binding_strength, dtype=self.dtype))
+
     def compute_force_components(
         self, positions: Any, epsilon: Any
     ) -> dict[str, jax.Array]:
@@ -581,16 +476,16 @@ class RubiscoEpyc1Simulation:
 
         Input:
             ``positions``: One configuration shaped ``(n_particles, 3)``.
-            ``epsilon``: Signed sticker-patch attraction strength.
+            ``epsilon``: Positive sticker-patch binding strength.
         Output:
             Dictionary containing ``steric``, ``sticker_patch``, ``bonded``,
             and ``total`` force arrays.
         """
         positions = jnp.asarray(positions, dtype=self.dtype)
-        epsilon = jnp.asarray(epsilon, dtype=self.dtype)
-        shifted = _neighbor_coordinates(positions, self.box)
+        epsilon = self._signed_attraction_epsilon(epsilon)
+        shifted = shift_to_neighbor_list_coordinates(positions, self.box)
         neighbors = self._allocate_neighbors(positions).update(shifted)
-        steric, attraction, bonded = forces.force_components(
+        steric, attraction, bonded = forces.calculate_force_components(
             positions,
             neighbors.idx,
             self.type_ids,
@@ -631,7 +526,8 @@ class RubiscoEpyc1Simulation:
         if epsilon is None:
             raise KeyError("JAX MD stepper requires fields['epsilon']")
         positions = self.init(fields)
-        epsilon = jnp.asarray(epsilon, dtype=self.dtype)
+        binding_strength = jnp.abs(jnp.asarray(epsilon, dtype=self.dtype))
+        epsilon = self._signed_attraction_epsilon(binding_strength)
         # JAX uses explicit PRNG keys rather than a mutable global RNG.  The
         # key is carried through lax.scan so every step receives fresh noise.
         key = jax.random.PRNGKey(self.seed)
@@ -643,19 +539,19 @@ class RubiscoEpyc1Simulation:
             if isinstance(overflow, jax.core.Tracer):
                 # Being differentiated or jitted: the flag cannot be read here. Run one
                 # ordinary call first so any needed capacity growth has already happened.
-                return self._write_output_if_requested(frames, epsilon)
+                return self._write_output_if_requested(frames, binding_strength)
             self.last_neighbor_overflow = bool(overflow)
             if not self.last_neighbor_overflow:
-                return self._write_output_if_requested(frames, epsilon)
+                return self._write_output_if_requested(frames, binding_strength)
             if attempt < self._max_capacity_retries:
                 self._extra_capacity = max(2 * self._extra_capacity, 16)   # recompiles once
         warnings.warn(
             "Neighbor list overflowed even after growing its capacity; some interacting pairs "
             "were dropped. Increase neighbor_extra_capacity.", RuntimeWarning, stacklevel=2,
         )
-        return self._write_output_if_requested(frames, epsilon)
+        return self._write_output_if_requested(frames, binding_strength)
 
-    def write_gsd(
+    def _write_gsd(
         self,
         trajectory: Any,
         path: str | Path | None = None,
@@ -725,7 +621,7 @@ class RubiscoEpyc1Simulation:
         """
         if self.output_dir is not None and not isinstance(trajectory, jax.core.Tracer):
             directories = self._artifact_directories()
-            gsd_path = self.write_gsd(trajectory)
+            gsd_path = self._write_gsd(trajectory)
             write_analysis_outputs(
                 gsd_path=gsd_path,
                 xyz_path=directories["xyz"] / f"{self.output_name}.xyz",
@@ -741,7 +637,7 @@ class RubiscoEpyc1Simulation:
         """Run a rollout using a compact convenience API.
 
         Input:
-            ``epsilon``: Signed sticker-patch attraction strength.
+            ``epsilon``: Positive sticker-patch binding strength.
             ``positions_0``: Optional initial coordinates.
             ``seed``: Optional temporary PRNG seed for this call.
         Output:

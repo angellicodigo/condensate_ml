@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 
-def _mapped_displacement(displacement: Callable, left: jax.Array, right: jax.Array) -> jax.Array:
+def map_pair_displacements(displacement: Callable, left: jax.Array, right: jax.Array) -> jax.Array:
     """Apply a vector-to-vector displacement function over matching leading axes.
 
     Input:
@@ -22,7 +22,7 @@ def _mapped_displacement(displacement: Callable, left: jax.Array, right: jax.Arr
     return jax.vmap(displacement)(left, right)
 
 
-def _neighbor_displacement(
+def map_neighbor_displacements(
     displacement: Callable,
     positions: jax.Array,
     neighbor_positions: jax.Array,
@@ -42,7 +42,7 @@ def _neighbor_displacement(
     return jax.vmap(pairwise, in_axes=(0, 0))(positions, neighbor_positions)
 
 
-def _bond_forces(
+def calculate_bond_forces(
     positions: jax.Array,
     pairs: jax.Array,
     spring_constants: jax.Array,
@@ -62,7 +62,7 @@ def _bond_forces(
         and opposite forces to its two endpoint particles.
     """
     i, j = pairs[:, 0], pairs[:, 1]
-    delta = _mapped_displacement(displacement, positions[i], positions[j])
+    delta = map_pair_displacements(displacement, positions[i], positions[j])
     distance_sq = jnp.sum(delta * delta, axis=-1, keepdims=True)
     distance = jnp.sqrt(jnp.maximum(distance_sq, 1e-12))
     force = (-spring_constants[:, None] * (distance - rest_lengths[:, None])) * delta / distance
@@ -71,7 +71,7 @@ def _bond_forces(
     return result.at[j].add(-force)
 
 
-def _neighbor_pair_force(
+def calculate_neighbor_pair_forces(
     positions: jax.Array,
     neighbor_indices: jax.Array,
     type_ids: jax.Array,
@@ -102,7 +102,7 @@ def _neighbor_pair_force(
     safe_indices = jnp.clip(neighbor_indices, 0, n_particles - 1)
     i_types = type_ids[:, None]
     j_types = type_ids[safe_indices]
-    delta = _neighbor_displacement(displacement, positions, positions[safe_indices])
+    delta = map_neighbor_displacements(displacement, positions, positions[safe_indices])
     dist_sq = jnp.sum(delta * delta, axis=-1)
 
     epsilon = epsilon_table[i_types, j_types]
@@ -113,7 +113,7 @@ def _neighbor_pair_force(
     return jnp.sum(jnp.where(active[..., None], prefactor[..., None] * delta, 0.0), axis=1)
 
 
-def force_components(
+def calculate_force_components(
     positions: jax.Array,
     neighbor_indices: jax.Array,
     type_ids: jax.Array,
@@ -137,14 +137,15 @@ def force_components(
         epsilon_table, sigma_table, cutoff_table: Steric pair parameters.
         nonbonded_mask: Pair-exclusion mask for the steric interaction.
         bond_pairs, bond_k, bond_r0: Bond topology and Hookean parameters.
-        attraction_epsilon, attraction_sigma, attraction_cutoff: Parameters
-            for the sticker-patch Gaussian interaction.
+        attraction_epsilon, attraction_sigma, attraction_cutoff: Signed internal
+            parameters for the sticker-patch Gaussian interaction. The caller
+            supplies a negative epsilon for an attractive well.
         displacement: Periodic displacement function.
     Output:
         Tuple ``(steric, attraction, bonded)``. Each entry is an
         ``(n_particles, 3)`` force array.
     """
-    steric = _neighbor_pair_force(
+    steric = calculate_neighbor_pair_forces(
         positions,
         neighbor_indices,
         type_ids,
@@ -160,7 +161,7 @@ def force_components(
     attraction_table = attraction_table.at[1, 3].set(attraction_epsilon)
     attraction_sigma_table = jnp.zeros_like(sigma_table).at[3, 1].set(attraction_sigma)
     attraction_sigma_table = attraction_sigma_table.at[1, 3].set(attraction_sigma)
-    attraction = _neighbor_pair_force(
+    attraction = calculate_neighbor_pair_forces(
         positions,
         neighbor_indices,
         type_ids,
@@ -170,13 +171,13 @@ def force_components(
         nonbonded_mask=jnp.ones_like(nonbonded_mask),
         displacement=displacement,
     )
-    bonded = _bond_forces(
+    bonded = calculate_bond_forces(
         positions, bond_pairs, bond_k, bond_r0, displacement
     )
     return steric, attraction, bonded
 
 
-def total_forces(
+def calculate_total_force(
     positions: jax.Array,
     neighbor_indices: jax.Array,
     type_ids: jax.Array,
@@ -202,7 +203,7 @@ def total_forces(
         bonded forces added together.
     """
     return sum(
-        force_components(
+        calculate_force_components(
             positions, neighbor_indices, type_ids, epsilon_table, sigma_table,
             cutoff_table, nonbonded_mask, bond_pairs, bond_k, bond_r0,
             attraction_epsilon, attraction_sigma, attraction_cutoff, displacement,
