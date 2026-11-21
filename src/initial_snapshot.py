@@ -1,4 +1,4 @@
-"""JAX-independent construction of the Rubisco-EPYC1 initial coordinates."""
+"""Initial coordinate generation for the Rubisco-EPYC1 model."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ import numpy as np
 
 
 def make_grid_positions(n: int, box: float, margin: float) -> np.ndarray:
-    """Create the first ``n`` points of a roughly cubic grid.
+    """Generates the first n coordinates of a cubic lattice within a bordered box volume.
 
-    Input:
-        n: Number of 3D points to return.
-        box: Length of the cubic simulation box.
-        margin: Distance kept between grid points and each box face.
-    Output:
-        A ``(n, 3)`` NumPy array of grid coordinates.
+    Inputs:
+        n: Number of 3D grid points to generate.
+        box: Periodic box length.
+        margin: Boundary margin distance between points and box faces.
+    Outputs:
+        Array of 3D grid coordinates shaped (n, 3).
     """
     n_side = int(np.ceil(n ** (1.0 / 3.0)))
     values = np.linspace(-box / 2.0 + margin, box / 2.0 - margin, n_side)
@@ -32,21 +32,20 @@ def generate_initial_coordinates(
     patch_radius: float,
     chain_r0: float,
 ) -> np.ndarray:
-    """Return the deterministic initial layout used by the simulation.
+    """Generates deterministic initial 3D coordinates for Rubisco centers, surface patches, and EPYC1 beads.
 
-    Input:
-        box: Cubic periodic box length.
-        patch_dirs: Unit vectors giving the patch directions on each Rubisco.
-        seed: Seed for the small random perturbations and chain orientations.
+    Inputs:
+        box: Periodic box length.
+        patch_dirs: Unit vectors defining patch orientations on each Rubisco core.
+        seed: Random seed for coordinate perturbations and chain orientations.
         n_rubisco: Number of Rubisco centers.
-        n_patches_per_rubisco: Number of patches attached to each Rubisco.
+        n_patches_per_rubisco: Number of surface patches per Rubisco.
         n_chains: Number of EPYC1 chains.
-        n_beads_per_chain: Beads in each chain.
-        patch_radius: Distance from a Rubisco center to its patches.
-        chain_r0: Spacing between consecutive chain beads.
-    Output:
-        A ``(n_particles, 3)`` float32 array ordered as Rubisco centers,
-        patches, and chain beads.
+        n_beads_per_chain: Number of beads per EPYC1 chain.
+        patch_radius: Radial distance from Rubisco center to its patches.
+        chain_r0: Equilibrium spacing between consecutive chain beads.
+    Outputs:
+        Initial particle coordinates array shaped (n_particles, 3).
     """
     rng = np.random.default_rng(seed)
     n_patch = n_rubisco * n_patches_per_rubisco

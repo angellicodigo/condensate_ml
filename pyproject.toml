@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rubisco-epyc1-jax-md"
+name = "condensate_ml"
 version = "0.1.0"
 description = "JAX MD Rubisco-EPYC1 differentiable Brownian dynamics simulation"
 requires-python = ">=3.10"
@@ -25,5 +25,5 @@ packages = [
 ]
 
 [tool.setuptools.package-dir]
-condensate_ml = "rubisco_epyc1_nucleation_growth/jax_md/scripts"
-"condensate_ml.helper" = "rubisco_epyc1_nucleation_growth/jax_md/helper"
+condensate_ml = "src"
+"condensate_ml.helper" = "helper"
