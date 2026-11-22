@@ -45,7 +45,11 @@ def epsilon_value_and_gradient(simulation, epsilon: Any):
 
 
 def finite_difference_epsilon_gradient(simulation, epsilon: Any, step: float) -> jax.Array:
-    """Return a centered finite-difference gradient with fixed simulation noise."""
+    """Return a centered finite-difference gradient with fixed simulation noise.
+
+    ``step`` must be large enough that the two losses differ by far more than float32 rounding
+    (~1e-7 for a loss near 1); a step of 0.01 here returns pure rounding noise. Use ~0.1.
+    """
     step = jnp.asarray(step, dtype=jnp.asarray(epsilon).dtype)
     return (
         trajectory_loss(simulation, epsilon + step)

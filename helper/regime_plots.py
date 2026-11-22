@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
 import pandas as pd
+
+from condensate_ml.constants import N_C, N_R
 
 
 REGIME_COLORS = {
@@ -96,7 +98,7 @@ def write_regime_summary_plots(
     largest_fraction_path = plot_regime_metric(
         data_by_regime=data_by_regime,
         metric="fraction",
-        ylabel="Largest-cluster fraction: f_max = N_max / 72",
+        ylabel=f"Largest-cluster fraction: f_max = N_max / {N_R + N_C}",
         output_path=plots_dir / "largest_cluster_fraction.jpeg",
     )
     cluster_count_path = plot_regime_metric(
@@ -113,7 +115,7 @@ def write_regime_comparison_plots(
     jaxmd_plots_dir: str | Path,
     output_dir: str | Path,
 ) -> tuple[Path, ...]:
-    """Write the five HOOMD-versus-JAX-MD metric-grid figures from the notebook."""
+    """Write one HOOMD-versus-JAX-MD figure per regime, with each metric's plots stacked."""
     reference_plots_dir = Path(reference_plots_dir)
     jaxmd_plots_dir = Path(jaxmd_plots_dir)
     output_dir = Path(output_dir)

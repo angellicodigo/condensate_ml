@@ -1,4 +1,8 @@
-"""Compare one deterministic Brownian-dynamics step against HOOMD."""
+"""Compare one zero-noise Brownian-dynamics step against HOOMD (needs a HOOMD GPU).
+
+At dt=0.0005 one step moves particles by <~6e-4, only a few hundred times the float32 rounding
+level, so this test mainly catches gross errors; ``test_forces.py`` is the sensitive check.
+"""
 
 from __future__ import annotations
 
@@ -7,32 +11,27 @@ import pytest
 
 from condensate_ml.helper import (
     BOX,
+    COMPONENTS,
+    DT,
     EXPECTED_PARTICLES,
     build_hoomd_initial_state,
     configure_hoomd_forces,
+    make_simulation,
 )
 
 ONE_STEP_SEEDS = tuple(range(101, 121))
-EPSILON_VALUES = (-0.1, -0.2, -0.5, -0.8, -1.2, -2.0)
-DT = 0.0005
+ONE_STEP_EPSILONS = (-0.1, -0.2, -0.5, -0.8, -1.2, -2.0)
+POSITION_ATOL = 1e-4
+POSITION_RTOL = 1e-5
 
 
 @pytest.mark.parametrize("seed", ONE_STEP_SEEDS)
-@pytest.mark.parametrize("epsilon", EPSILON_VALUES)
+@pytest.mark.parametrize("epsilon", ONE_STEP_EPSILONS)
 def test_one_deterministic_step_matches_hoomd(seed: int, epsilon: float) -> None:
     """Compare corresponding positions for every seed/epsilon combination."""
-    pytest.importorskip("jax")
     pytest.importorskip("jax_md")
-    from condensate_ml import RubiscoEpyc1Simulation
-
     hoomd_simulation, initial_positions = build_hoomd_initial_state(BOX, seed)
-    jax_simulation = RubiscoEpyc1Simulation(
-        n_steps=1,
-        dt=DT,
-        box=BOX,
-        write_every=1,
-        seed=seed,
-    )
+    jax_simulation = make_simulation(BOX, seed, dt=DT)
 
     jax_positions = np.asarray(
         jax_simulation.brownian_step(
@@ -45,12 +44,7 @@ def test_one_deterministic_step_matches_hoomd(seed: int, epsilon: float) -> None
     assert jax_positions.shape == (EXPECTED_PARTICLES, 3)
     assert np.isfinite(jax_positions).all()
 
-    configure_hoomd_forces(
-        hoomd_simulation,
-        epsilon,
-        DT,
-        {"steric", "sticker_patch", "bonded"},
-    )
+    configure_hoomd_forces(hoomd_simulation, epsilon, DT, set(COMPONENTS))
     hoomd_simulation.run(1)
     hoomd_positions = np.asarray(
         hoomd_simulation.state.get_snapshot().particles.position,
@@ -66,6 +60,6 @@ def test_one_deterministic_step_matches_hoomd(seed: int, epsilon: float) -> None
     np.testing.assert_allclose(
         jax_positions,
         hoomd_positions,
-        atol=1e-4,
-        rtol=1e-5,
+        atol=POSITION_ATOL,
+        rtol=POSITION_RTOL,
     )

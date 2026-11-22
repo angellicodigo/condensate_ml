@@ -1,4 +1,12 @@
-"""Shared HOOMD/JAX initial-condition builders."""
+"""HOOMD reference initial-condition builder and the JAX counterpart.
+
+The model constants below are deliberately written out again instead of being
+imported from ``condensate_ml.constants``. They mirror the MODEL PARAMETERS in
+``molecular_sim/simulate_hoomd_patchy_full.py`` so that the comparison against
+HOOMD stays independent of the package under test.
+``tests/test_internal_functions.py::test_reference_constants_match_package``
+fails if the two ever drift apart.
+"""
 
 from __future__ import annotations
 
@@ -6,27 +14,27 @@ import numpy as np
 import pytest
 
 BOX = 40.0
-EXPECTED_PARTICLES = 792
 N_R = 24
 N_C = 48
 N_BEADS = 12
-STICKER_INDEX = [1, 3, 5, 7, 9, 11]
+STICKER_INDEX = (1, 3, 5, 7, 9, 11)
 PATCHES = 8
 PATCH_RADIUS = 2.5
 CHAIN_R0 = 1.2
+EXPECTED_PARTICLES = N_R + N_R * PATCHES + N_C * N_BEADS  # 792
 
 
 def minimum_image(delta: np.ndarray, box: float) -> np.ndarray:
-    """Apply the origin-centered periodic minimum-image convention."""
+    """Map displacement vectors to their nearest periodic image."""
     return delta - box * np.round(delta / box)
 
 
 def wrap_centered(positions: np.ndarray, box: float) -> np.ndarray:
-    """Wrap coordinates into ``[-box/2, box/2)``."""
+    """Wrap coordinates into ``[-box/2, box/2)`` (same rule as the JAX rollout)."""
     return ((positions + box / 2.0) % box) - box / 2.0
 
 
-def make_grid_positions(n: int, box: float, margin: float = 6.0) -> np.ndarray:
+def make_grid_positions(n: int, box: float, margin: float) -> np.ndarray:
     """Create the cubic lattice used by the HOOMD reference initialization."""
     n_side = int(np.ceil(n ** (1.0 / 3.0)))
     values = np.linspace(-box / 2.0 + margin, box / 2.0 - margin, n_side)
@@ -35,6 +43,7 @@ def make_grid_positions(n: int, box: float, margin: float = 6.0) -> np.ndarray:
 
 
 def _patch_directions() -> np.ndarray:
+    """Eight unit vectors pointing to the corners of a cube."""
     directions = np.asarray(
         [
             [1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1],

@@ -1,4 +1,9 @@
-"""Force, gradient, and short deterministic rollout validation."""
+"""Compare JAX MD forces and short deterministic trajectories against HOOMD (needs a HOOMD GPU).
+
+HOOMD and JAX use different random-number generators, so everything here runs HOOMD with
+``kT=0`` (no random kick). JAX-only checks live in ``test_internal_functions.py`` and
+``test_differentiable.py``.
+"""
 
 from __future__ import annotations
 
@@ -17,20 +22,24 @@ from condensate_ml.helper import (
     configure_hoomd_forces,
     force_report,
     jax_force_components,
+    make_simulation,
     minimum_image,
     perturbed_state,
 )
 
+# Float32 JAX vs float32 HOOMD. On the unperturbed layout the bonded force is ~0, so the
+# relative error of the total is dominated by rounding and gets a looser bound.
 REL_L2_TOL = 1e-4
 REL_MAX_TOL = 1e-3
+REL_L2_TOL_INITIAL_LAYOUT = 3e-4
+FIVE_STEP_ATOL = 5e-5
 
 
 @pytest.mark.parametrize("sigma", PERTURBATIONS)
 @pytest.mark.parametrize("epsilon", EPSILON_VALUES)
 @pytest.mark.parametrize("seed", FORCE_SEEDS)
 def test_force_components_match_hoomd(seed: int, epsilon: float, sigma: float) -> None:
-    """Compare HOOMD force objects directly for 60 configurations."""
-    pytest.importorskip("jax")
+    """Compare each HOOMD force term against JAX (5 seeds x 4 epsilons x 3 perturbations = 60)."""
     pytest.importorskip("jax_md")
     hoomd_simulation, positions = perturbed_state(seed, sigma)
     hoomd_forces = configure_hoomd_forces(
@@ -58,63 +67,19 @@ def test_force_components_match_hoomd(seed: int, epsilon: float, sigma: float) -
             np.testing.assert_allclose(candidate, 0.0, atol=2e-4, rtol=0.0)
 
     total_l2, _ = force_report("total", jax_components["total"], total_hoomd)
-    assert total_l2 < (3e-4 if sigma == 0.0 else REL_L2_TOL)
-
-
-def test_jax_force_satisfies_newtons_third_law() -> None:
-    """Each force component should have approximately zero net force."""
-    _, positions = build_hoomd_initial_state(BOX, 107)
-    components = jax_force_components(positions, -0.8)
-    for name in (*COMPONENTS, "total"):
-        tolerance = 1e-5 * max(1.0, float(np.max(np.abs(components[name]))))
-        np.testing.assert_allclose(components[name].sum(axis=0), 0.0, atol=tolerance)
-
-
-def test_periodic_force_is_finite() -> None:
-    """Minimum-image forces remain finite near a periodic boundary."""
-    pytest.importorskip("jax")
-    pytest.importorskip("jax_md")
-    from condensate_ml import RubiscoEpyc1Simulation
-
-    simulation = RubiscoEpyc1Simulation(n_steps=1, box=BOX, write_every=1)
-    positions = np.asarray(simulation.init(), dtype=np.float32).copy()
-    positions[0] = [BOX / 2.0 - 0.1, 0.0, 0.0]
-    positions[1] = [-BOX / 2.0 + 0.1, 0.0, 0.0]
-    forces = np.asarray(simulation.compute_forces(positions, -0.8))
-    assert np.isfinite(forces).all()
-
-
-def test_rollout_gradient_matches_finite_difference() -> None:
-    """Autodiff through a short rollout agrees with finite differences."""
-    pytest.importorskip("jax")
-    pytest.importorskip("jax_md")
-    import jax
-    import jax.numpy as jnp
-    from condensate_ml import RubiscoEpyc1Simulation
-
-    simulation = RubiscoEpyc1Simulation(n_steps=40, box=29.0, write_every=10, seed=105)
-
-    def loss(epsilon):
-        last = simulation({"epsilon": epsilon})[-1]
-        return jnp.mean(last**2) + jnp.mean(jnp.var(last, axis=0))
-
-    epsilon = jnp.asarray(-2.0, dtype=jnp.float32)
-    h = jnp.asarray(0.2, dtype=jnp.float32)
-    automatic = jax.grad(loss)(epsilon)
-    finite_difference = (loss(epsilon + h) - loss(epsilon - h)) / (2.0 * h)
-    np.testing.assert_allclose(automatic, finite_difference, rtol=5e-2, atol=0.0)
+    assert total_l2 < (REL_L2_TOL_INITIAL_LAYOUT if sigma == 0.0 else REL_L2_TOL)
 
 
 def test_five_deterministic_steps_match_hoomd() -> None:
-    """Check that deterministic position errors do not rapidly grow."""
-    pytest.importorskip("jax")
-    pytest.importorskip("jax_md")
-    from condensate_ml import RubiscoEpyc1Simulation
+    """Five zero-noise steps: positions must still agree with HOOMD (errors must not grow).
 
+    Five steps move particles by up to ~2.7e-3, so the 5e-5 tolerance is ~50x below the motion.
+    """
+    pytest.importorskip("jax_md")
     seed, epsilon, n_steps = 107, -0.8, 5
     hoomd_simulation, initial_positions = build_hoomd_initial_state(BOX, seed)
     configure_hoomd_forces(hoomd_simulation, epsilon, DT, set(COMPONENTS))
-    jax_simulation = RubiscoEpyc1Simulation(n_steps=1, dt=DT, box=BOX, write_every=1, seed=seed)
+    jax_simulation = make_simulation(BOX, seed, dt=DT)
 
     jax_positions = initial_positions.copy()
     for _ in range(n_steps):
@@ -130,4 +95,4 @@ def test_five_deterministic_steps_match_hoomd() -> None:
     difference = minimum_image(jax_positions - hoomd_positions, BOX)
     print(f"five-step max error: {np.max(np.abs(difference)):.6e}")
     print(f"five-step RMS error: {np.sqrt(np.mean(difference**2)):.6e}")
-    np.testing.assert_allclose(jax_positions, hoomd_positions, atol=5e-5, rtol=0.0)
+    np.testing.assert_allclose(jax_positions, hoomd_positions, atol=FIVE_STEP_ATOL, rtol=0.0)

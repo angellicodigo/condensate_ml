@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: condensate_ml
+Version: 0.1.0
+Summary: JAX MD Rubisco-EPYC1 differentiable Brownian dynamics simulation
+Requires-Python: >=3.10
+Requires-Dist: jax
+Requires-Dist: jax-md
+Requires-Dist: numpy
+Provides-Extra: cuda12
+Requires-Dist: jax[cuda12]; extra == "cuda12"

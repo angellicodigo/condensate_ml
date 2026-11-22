@@ -4,4 +4,4 @@ __pycache__/
 /.pytest_cache/
 .gitignore
 /jobs/
-.env
+.env*.egg-info/

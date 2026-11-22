@@ -1,0 +1,6 @@
+jax
+jax-md
+numpy
+
+[cuda12]
+jax[cuda12]
