@@ -32,9 +32,9 @@ The simulation models the coarse-grained multivalent binding of Rubisco complexe
 ```
 
 - **Particles:**
-  - **Rubisco:** 12 core beads (Type 0) each rigidly tethered to 8 binding patches (Type 1) arranged with cubic symmetry ($12 + 12 \times 8 = 108$ beads).
-  - **EPYC1:** 20 flexible polymer chains of 11 coarse-grained beads each (alternating 6 Type 2 stickers and 5 Type 3 spacers; $20 \times 11 = 220$ beads).
-  - **Total particles:** 328 beads.
+  - **Rubisco:** 24 core beads (Type 0) each rigidly tethered to 8 binding patches (Type 1) arranged with cubic symmetry ($24 + 24 \times 8 = 216$ beads).
+  - **EPYC1:** 48 flexible polymer chains of 12 coarse-grained beads each (alternating 6 Type 3 spacers and 6 Type 2 stickers; $48 \times 12 = 576$ beads).
+  - **Total particles:** 792 beads.
 - **Potentials:**
   - **Bonds:** Harmonic springs $V(r) = \frac{1}{2} k (r - r_0)^2$ for polymer backbones and patch tethers.
   - **Steric Repulsion:** Soft Gaussian pair repulsion $U(r) = \epsilon_{ij} e^{-(r/\sigma_{ij})^2}$ with type-dependent parameters and bond exclusion masks.
@@ -135,12 +135,16 @@ epsilon = jnp.asarray(1.2, dtype=jnp.float32)
 trajectory = sim({"epsilon": epsilon})
 
 print("Trajectory shape (n_frames, n_particles, 3):", trajectory.shape)
-# Output: (21, 328, 3)
+# Output: (21, 792, 3)
 ```
 
 ### 2. Reverse-Mode Autodiff through Simulation Trajectory
 
 Optimize or take gradients of an objective function with respect to physical simulation parameters (such as `epsilon`):
+
+> [!NOTE]
+> **Parameterization & Gradient Sign:**
+> The simulation converts input `epsilon` to an attractive well depth via $-\left|\epsilon\right|$ internally, allowing both positive binding affinities ($\epsilon > 0$) and negative HOOMD-style potential depths ($\epsilon < 0$) to produce attractive forces. Because of the $-|\epsilon|$ mapping, $\frac{\partial (-\left|\epsilon\right|)}{\partial \epsilon} = -\operatorname{sgn}(\epsilon)$, so the gradient with respect to a positive $\epsilon$ has the opposite sign to a negative $\epsilon$. When training neural networks or running gradient-based optimization on binding strength, parameterize $\epsilon$ as positive (e.g. through softplus, ReLU, or positive initialization) so that $\frac{\partial \text{contacts}}{\partial \epsilon} > 0$ consistently reflects that increased binding affinity yields increased condensation contacts.
 
 ```python
 import jax

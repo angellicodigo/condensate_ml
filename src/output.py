@@ -316,8 +316,6 @@ def write_analysis_outputs(
     Outputs:
         Pandas DataFrame containing the computed frame metrics.
     """
-    import pandas as pd
-
     data = analyze_gsd(
         path=gsd_path,
         dt=dt,

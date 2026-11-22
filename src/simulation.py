@@ -371,6 +371,11 @@ class RubiscoEpyc1Simulation:
     def __call__(self, fields: Mapping[str, Any]) -> jax.Array:
         """Executes the differentiable simulation rollout and returns sampled trajectory frames.
 
+        Note on gradient sign: The simulation uses -abs(epsilon) internally, so the gradient with
+        respect to a positive epsilon has the opposite sign to a negative epsilon. When training
+        a neural network or optimizing binding affinity, parameterize epsilon as positive binding
+        strength so that d(contacts)/d(epsilon) > 0.
+
         Inputs:
             fields: Mapping containing required 'epsilon' and optional 'positions_0'.
         Outputs:

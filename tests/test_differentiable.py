@@ -95,3 +95,55 @@ def test_gradient_through_denser_rollout_matches_finite_difference() -> None:
     automatic = jax.grad(loss)(epsilon)
     finite_difference = (loss(epsilon + step) - loss(epsilon - step)) / (2.0 * step)
     np.testing.assert_allclose(automatic, finite_difference, rtol=5e-2, atol=0.0)
+
+
+def test_contact_loss_gradient_sign_and_initial_positions_gradient() -> None:
+    """Stronger binding increases contacts (dLoss/dEps < 0) and dLoss/dPositions_0 is finite."""
+    pytest.importorskip("jax")
+    pytest.importorskip("jax_md")
+    import jax
+    import jax.numpy as jnp
+
+    simulation = make_differentiability_simulation(n_steps=16, write_every=8, seed=101)
+    type_ids = np.asarray(simulation.type_ids)
+    patch_indices = jnp.asarray(np.where(type_ids == 1)[0], dtype=jnp.int32)
+    sticker_indices = jnp.asarray(np.where(type_ids == 3)[0], dtype=jnp.int32)
+    displacement = simulation.displacement
+
+    def soft_contacts_loss(positions):
+        patches = positions[patch_indices]
+        stickers = positions[sticker_indices]
+        pair_disp = jax.vmap(jax.vmap(displacement, in_axes=(None, 0)), in_axes=(0, None))
+        delta = pair_disp(stickers, patches)
+        dist_sq = jnp.sum(delta * delta, axis=-1)
+        # Soft contact proxy: Gaussian proximity within attraction radius
+        return jnp.sum(jnp.exp(-0.5 * dist_sq / (1.5**2)))
+
+    # 1. Gradient with respect to positive binding strength epsilon
+    # For positive epsilon, increasing epsilon deepens attraction, increasing contacts.
+    # Therefore, a loss defined as -contacts must have a negative gradient (dLoss/dEps < 0).
+    def loss_wrt_epsilon(eps):
+        trajectory = simulation({"epsilon": eps})
+        return -soft_contacts_loss(trajectory[-1])
+
+    binding_epsilon = jnp.asarray(1.2, dtype=jnp.float32)
+    loss_val, d_loss_d_eps = jax.value_and_grad(loss_wrt_epsilon)(binding_epsilon)
+
+    assert np.isfinite(float(loss_val))
+    assert np.isfinite(float(d_loss_d_eps))
+    # Increasing binding strength must increase contacts (decrease negative contacts loss)
+    assert float(d_loss_d_eps) < 0.0, "Expected d(-contacts)/d(epsilon) < 0 for positive binding strength"
+
+    # 2. Gradient with respect to initial positions
+    initial_positions = simulation.init()
+
+    def loss_wrt_positions_0(pos_0):
+        trajectory = simulation({"epsilon": binding_epsilon, "positions_0": pos_0})
+        return soft_contacts_loss(trajectory[-1])
+
+    d_loss_d_pos_0 = jax.grad(loss_wrt_positions_0)(initial_positions)
+
+    assert d_loss_d_pos_0.shape == initial_positions.shape
+    assert bool(jnp.isfinite(d_loss_d_pos_0).all()), "Gradient w.r.t initial positions must be finite"
+    assert bool(jnp.any(d_loss_d_pos_0 != 0.0)), "Gradient w.r.t initial positions must be non-zero"
+
