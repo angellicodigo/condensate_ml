@@ -98,9 +98,9 @@ def test_chains_connected_and_patches_cubic_in_rollout() -> None:
     epsilon = 1.2
 
     simulation = RubiscoEpyc1Simulation(
-        n_steps=n_steps, box=box, write_every=write_every, seed=101, checkpoint_blocks=True
+        n_steps=n_steps, box=box, write_every=write_every, checkpoint_blocks=True
     )
-    trajectory = np.asarray(simulation({"epsilon": epsilon}))
+    trajectory = np.asarray(simulation({"epsilon": epsilon, "seed": 101}))
 
     ideal_patch_dots = PATCH_DIRS @ PATCH_DIRS.T
     bond_types = np.asarray(simulation.bond_type_ids)
@@ -194,7 +194,7 @@ def create_hand_built_gsd_trajectory(
 def test_analysis_metrics_on_hand_built_frames() -> None:
     """Validates cluster counts, largest cluster, and fraction on known ground-truth geometries."""
     box = 40.0
-    simulation = RubiscoEpyc1Simulation(n_steps=0, box=box, write_every=1, seed=1)
+    simulation = RubiscoEpyc1Simulation(n_steps=0, box=box, write_every=1)
     n_particles = simulation.n_particles
     n_complexes = simulation.n_rubisco + simulation.n_chains  # 24 + 48 = 72
 
@@ -285,8 +285,8 @@ def test_gsd_round_trip() -> None:
 
     box = 40.0
     write_every = 5
-    simulation = RubiscoEpyc1Simulation(n_steps=10, box=box, write_every=write_every, seed=101)
-    trajectory = np.asarray(simulation({"epsilon": 1.0}))
+    simulation = RubiscoEpyc1Simulation(n_steps=10, box=box, write_every=write_every)
+    trajectory = np.asarray(simulation({"epsilon": 1.0, "seed": 101}))
     n_frames, n_particles, _ = trajectory.shape
 
     with tempfile.TemporaryDirectory() as temp_dir:

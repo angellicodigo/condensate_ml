@@ -12,7 +12,6 @@ def make_differentiability_simulation(
     *,
     n_steps: int = 16,
     write_every: int = 8,
-    seed: int = 101,
     checkpoint_blocks: bool = True,
 ):
     """Construct a small simulation suitable for fast gradient tests."""
@@ -22,15 +21,13 @@ def make_differentiability_simulation(
         n_steps=n_steps,
         box=40.0,
         write_every=write_every,
-        seed=seed,
         checkpoint_blocks=checkpoint_blocks,
-        output_dir=None,
     )
 
 
-def trajectory_loss(simulation, epsilon: Any) -> jax.Array:
+def trajectory_loss(simulation, epsilon: Any, seed: int = 101) -> jax.Array:
     """Use a deterministic differentiable loss on the final trajectory frame."""
-    trajectory = simulation({"epsilon": epsilon})
+    trajectory = simulation({"epsilon": epsilon, "seed": seed})
     final_positions = trajectory[-1]
     coordinate_weights = jnp.linspace(
         -1.0, 1.0, final_positions.size, dtype=final_positions.dtype
@@ -38,13 +35,13 @@ def trajectory_loss(simulation, epsilon: Any) -> jax.Array:
     return jnp.mean(final_positions * coordinate_weights) + 1e-3 * jnp.mean(final_positions**2)
 
 
-def epsilon_value_and_gradient(simulation, epsilon: Any):
+def epsilon_value_and_gradient(simulation, epsilon: Any, seed: int = 101):
     """Return loss and autodiff gradient with respect to epsilon."""
-    loss_for_epsilon = lambda value: trajectory_loss(simulation, value)
+    loss_for_epsilon = lambda value: trajectory_loss(simulation, value, seed=seed)
     return jax.value_and_grad(loss_for_epsilon)(epsilon)
 
 
-def finite_difference_epsilon_gradient(simulation, epsilon: Any, step: float) -> jax.Array:
+def finite_difference_epsilon_gradient(simulation, epsilon: Any, step: float, seed: int = 101) -> jax.Array:
     """Return a centered finite-difference gradient with fixed simulation noise.
 
     ``step`` must be large enough that the two losses differ by far more than float32 rounding
@@ -52,6 +49,6 @@ def finite_difference_epsilon_gradient(simulation, epsilon: Any, step: float) ->
     """
     step = jnp.asarray(step, dtype=jnp.asarray(epsilon).dtype)
     return (
-        trajectory_loss(simulation, epsilon + step)
-        - trajectory_loss(simulation, epsilon - step)
+        trajectory_loss(simulation, epsilon + step, seed=seed)
+        - trajectory_loss(simulation, epsilon - step, seed=seed)
     ) / (2.0 * step)

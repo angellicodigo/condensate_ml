@@ -60,13 +60,17 @@ def run_regime(regime: Regime, output_dir: str | Path):
         n_steps=regime.n_steps,
         box=regime.box,
         write_every=regime.write_every,
-        seed=regime.seed,
         checkpoint_blocks=True,
-        output_dir=output_dir,
-        output_name=regime.name,
     )
     start = time.perf_counter()
-    trajectory = simulation({"epsilon": jnp.asarray(regime.epsilon, dtype=jnp.float32)})
+    trajectory = simulation(
+        {
+            "epsilon": jnp.asarray(regime.epsilon, dtype=jnp.float32),
+            "seed": regime.seed,
+            "output_dir": output_dir,
+            "output_name": regime.name,
+        }
+    )
     trajectory.block_until_ready()  # wait for asynchronous accelerator work
     elapsed = time.perf_counter() - start
     print(

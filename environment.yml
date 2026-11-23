@@ -11,8 +11,10 @@ dependencies:
   - hoomd=*=*gpu*
   - cuda-version=12.6
   - python-dotenv
+  - git
   - pip
   - pip:
+    - git+https://github.com/rhoitink/simulatedmicroscopy
     - torch
     - marimo
     - pytest

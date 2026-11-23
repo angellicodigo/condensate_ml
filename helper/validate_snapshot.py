@@ -150,6 +150,5 @@ def build_jax_initial_positions(box: float, seed: int) -> np.ndarray:
         n_steps=1,
         box=box,
         write_every=1,
-        seed=seed,
     )
-    return np.asarray(simulation.init(), dtype=np.float64)
+    return np.asarray(simulation.init({"seed": seed}), dtype=np.float64)

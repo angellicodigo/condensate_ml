@@ -25,13 +25,10 @@ Input parameters:
 - kT - Thermal energy scale ($k_B T$) controlling thermal noise fluctuations.
 - box - Side length of the cubic periodic simulation box.
 - write_every - Timestep interval at which simulation trajectory frames are recorded.
-- seed - Random seed used for initial coordinate generation and thermal noise sampling.
 - dtype - Floating-point data type used for simulation array computations.
 - _extra_capacity - Extra neighbor slot padding allocated per particle to prevent neighbor list overflow during dynamics.
 - _max_capacity_retries - Maximum number of neighbor list capacity increase and reallocation retries allowed upon overflow.
 - last_neighbor_overflow - Boolean flag tracking whether a neighbor list overflow occurred during the most recent simulation run.
-- output_dir - Directory path where trajectory files and analysis figures are saved.
-- output_name - Base filename used when exporting simulation trajectories and analysis outputs.
 
 From `constant.py`:
 - n_rubisco - Total number of Rubisco core particles in the system.
@@ -77,21 +74,23 @@ simulation = RubiscoEpyc1Simulation(
     n_steps=params["N_STEPS"],
     box=params["BOX"],
     write_every=params["WRITE_EVERY"],
-    seed=params["SEED"],
     checkpoint_blocks=True,
-    output_dir=output_dir,
-    output_name=name,
 )
 ```
 
-Caling RubiscoEpyc1Simulation() first calls the __init__() method.
+Calling `RubiscoEpyc1Simulation()` first calls the `__init__()` method to build topology, tables, and compile the rollout.
 
 ```python
 epsilon = jnp.asarray(params["EPS"], dtype=jnp.float32)
-trajectory = simulation({"epsilon": epsilon})
+trajectory = simulation({
+    "epsilon": epsilon,
+    "seed": params["SEED"],
+    "output_dir": output_dir,
+    "output_name": params["name"],
+})
 ```
 
-This calls the method __call__(), which executes the differentiable simulation rollout and returns sampled trajectory frames. Let's look at what this method does.
+This calls the method `__call__()`, which executes the differentiable simulation rollout and returns sampled trajectory frames. Note that `seed` is a required parameter for `__call__()`, while `output_dir` and `output_name` are optional.
 
 ```python
 def __call__(self, fields: Mapping[str, Any]) -> jax.Array:

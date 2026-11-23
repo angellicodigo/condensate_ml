@@ -87,7 +87,7 @@ def test_gradient_through_denser_rollout_matches_finite_difference() -> None:
     simulation = make_simulation(29.0, 105, n_steps=40, write_every=10)
 
     def loss(epsilon):
-        last = simulation({"epsilon": epsilon})[-1]
+        last = simulation({"epsilon": epsilon, "seed": 105})[-1]
         return jnp.mean(last**2) + jnp.mean(jnp.var(last, axis=0))
 
     epsilon = jnp.asarray(-2.0, dtype=jnp.float32)
@@ -104,7 +104,7 @@ def test_contact_loss_gradient_sign_and_initial_positions_gradient() -> None:
     import jax
     import jax.numpy as jnp
 
-    simulation = make_differentiability_simulation(n_steps=16, write_every=8, seed=101)
+    simulation = make_differentiability_simulation(n_steps=16, write_every=8)
     type_ids = np.asarray(simulation.type_ids)
     patch_indices = jnp.asarray(np.where(type_ids == 1)[0], dtype=jnp.int32)
     sticker_indices = jnp.asarray(np.where(type_ids == 3)[0], dtype=jnp.int32)
@@ -123,7 +123,7 @@ def test_contact_loss_gradient_sign_and_initial_positions_gradient() -> None:
     # For positive epsilon, increasing epsilon deepens attraction, increasing contacts.
     # Therefore, a loss defined as -contacts must have a negative gradient (dLoss/dEps < 0).
     def loss_wrt_epsilon(eps):
-        trajectory = simulation({"epsilon": eps})
+        trajectory = simulation({"epsilon": eps, "seed": 101})
         return -soft_contacts_loss(trajectory[-1])
 
     binding_epsilon = jnp.asarray(1.2, dtype=jnp.float32)
@@ -135,10 +135,10 @@ def test_contact_loss_gradient_sign_and_initial_positions_gradient() -> None:
     assert float(d_loss_d_eps) < 0.0, "Expected d(-contacts)/d(epsilon) < 0 for positive binding strength"
 
     # 2. Gradient with respect to initial positions
-    initial_positions = simulation.init()
+    initial_positions = simulation.init({"seed": 101})
 
     def loss_wrt_positions_0(pos_0):
-        trajectory = simulation({"epsilon": binding_epsilon, "positions_0": pos_0})
+        trajectory = simulation({"epsilon": binding_epsilon, "positions_0": pos_0, "seed": 101})
         return soft_contacts_loss(trajectory[-1])
 
     d_loss_d_pos_0 = jax.grad(loss_wrt_positions_0)(initial_positions)

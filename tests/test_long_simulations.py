@@ -24,10 +24,14 @@ def test_full_rollout_is_finite_and_in_box(regime: Regime) -> None:
         n_steps=regime.n_steps,
         box=regime.box,
         write_every=regime.write_every,
-        seed=regime.seed,
         checkpoint_blocks=True,
     )
-    trajectory = simulation({"epsilon": np.asarray(regime.epsilon, dtype=np.float32)})
+    trajectory = simulation(
+        {
+            "epsilon": np.asarray(regime.epsilon, dtype=np.float32),
+            "seed": regime.seed,
+        }
+    )
     trajectory.block_until_ready()
     trajectory = np.asarray(trajectory)
 

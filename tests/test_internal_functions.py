@@ -110,7 +110,7 @@ def test_mobilities_follow_hoomd_gammas():
 
 def test_short_stochastic_rollout_is_sane():
     simulation = make_simulation(29.0, 105, n_steps=200, write_every=100)
-    frames = np.asarray(simulation({"epsilon": -2.5}))
+    frames = np.asarray(simulation({"epsilon": -2.5, "seed": 105}))
     assert np.isfinite(frames).all()
     assert frames.max() < 14.5 + 1e-4 and frames.min() >= -14.5 - 1e-4
     assert not bool(simulation.last_neighbor_overflow)

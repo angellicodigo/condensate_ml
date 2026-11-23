@@ -249,23 +249,17 @@ def test_trajectory_reproducibility_across_seeds_and_checkpointing() -> None:
     box = 40.0
     epsilon = 1.0
 
-    sim_seed_a = RubiscoEpyc1Simulation(
-        n_steps=n_steps, box=box, write_every=write_every, seed=42, checkpoint_blocks=True
-    )
-    sim_seed_a_repeat = RubiscoEpyc1Simulation(
-        n_steps=n_steps, box=box, write_every=write_every, seed=42, checkpoint_blocks=True
-    )
-    sim_seed_b = RubiscoEpyc1Simulation(
-        n_steps=n_steps, box=box, write_every=write_every, seed=43, checkpoint_blocks=True
+    sim_checkpointed = RubiscoEpyc1Simulation(
+        n_steps=n_steps, box=box, write_every=write_every, checkpoint_blocks=True
     )
     sim_uncheckpointed = RubiscoEpyc1Simulation(
-        n_steps=n_steps, box=box, write_every=write_every, seed=42, checkpoint_blocks=False
+        n_steps=n_steps, box=box, write_every=write_every, checkpoint_blocks=False
     )
 
-    traj_a = np.asarray(sim_seed_a({"epsilon": epsilon}))
-    traj_a_repeat = np.asarray(sim_seed_a_repeat({"epsilon": epsilon}))
-    traj_b = np.asarray(sim_seed_b({"epsilon": epsilon}))
-    traj_uncheckpointed = np.asarray(sim_uncheckpointed({"epsilon": epsilon}))
+    traj_a = np.asarray(sim_checkpointed({"epsilon": epsilon, "seed": 42}))
+    traj_a_repeat = np.asarray(sim_checkpointed({"epsilon": epsilon, "seed": 42}))
+    traj_b = np.asarray(sim_checkpointed({"epsilon": epsilon, "seed": 43}))
+    traj_uncheckpointed = np.asarray(sim_uncheckpointed({"epsilon": epsilon, "seed": 42}))
 
     # Identical seed produces bitwise matching trajectory
     np.testing.assert_array_equal(traj_a, traj_a_repeat)
@@ -275,6 +269,40 @@ def test_trajectory_reproducibility_across_seeds_and_checkpointing() -> None:
 
     # Different seeds diverge
     assert not np.array_equal(traj_a, traj_b)
+
+
+def test_simulation_init_and_call_signatures(tmp_path) -> None:
+    """Verifies seed is required in __call__, output params are optional in __call__, and absent in __init__."""
+    sim = RubiscoEpyc1Simulation(n_steps=10, box=40.0, write_every=5)
+
+    # 1. Neither seed, output_dir, nor output_name exist on the instance
+    assert not hasattr(sim, "seed")
+    assert not hasattr(sim, "output_dir")
+    assert not hasattr(sim, "output_name")
+
+    # 2. None of these are accepted by __init__
+    with pytest.raises(TypeError):
+        RubiscoEpyc1Simulation(n_steps=10, seed=42)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        RubiscoEpyc1Simulation(n_steps=10, output_dir=tmp_path)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        RubiscoEpyc1Simulation(n_steps=10, output_name="test")  # type: ignore[call-arg]
+
+    # 3. Calling __call__ without seed must raise KeyError
+    with pytest.raises(KeyError, match="seed"):
+        sim({"epsilon": 1.0})
+
+    # 4. Calling __call__ with seed succeeds
+    traj = sim({"epsilon": 1.0, "seed": 42})
+    assert traj.shape[0] == 3
+
+    # 5. Calling with output_dir and output_name in fields delegates to write_outputs
+    recorded_outputs = []
+    sim.write_outputs = (  # type: ignore[method-assign]
+        lambda frames, eps, output_dir, output_name: recorded_outputs.append((output_dir, output_name))
+    )
+    sim({"epsilon": 1.0, "seed": 42, "output_dir": tmp_path, "output_name": "custom_run"})
+    assert recorded_outputs == [(tmp_path, "custom_run")]
 
 
 # ---------------------------------------------------------------------------

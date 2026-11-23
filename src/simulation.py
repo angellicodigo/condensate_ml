@@ -56,14 +56,11 @@ class RubiscoEpyc1Simulation:
         dt: float = DT,
         box: float = 40.0,
         write_every: int = 100,
-        seed: int = 42,
         neighbor_buffer: float = 0.4,
         dtype: Any = jnp.float32,
         checkpoint_blocks: bool = True,
         neighbor_extra_capacity: int = 32,
         max_capacity_retries: int = 3,
-        output_dir: str | Path | None = None,
-        output_name: str = "trajectory",
         kT: float = KBT,
     ) -> None:
         """Initializes simulation parameters, static topology, interaction tables, and compiled rollout code.
@@ -73,14 +70,11 @@ class RubiscoEpyc1Simulation:
             dt: Brownian dynamics integration timestep.
             box: Cubic periodic box length.
             write_every: Timestep interval between saved trajectory frames.
-            seed: Random seed for coordinate generation and thermal noise.
             neighbor_buffer: Skin buffer distance for neighbor-list updates.
             dtype: Target floating-point precision type.
             checkpoint_blocks: Whether to checkpoint scan intervals during reverse autodiff.
             neighbor_extra_capacity: Extra neighbor slots allocated per particle.
             max_capacity_retries: Maximum neighbor list allocation retries upon overflow.
-            output_dir: Optional path to directory for host-side output artifacts.
-            output_name: Base name for generated trajectory and analysis files.
             kT: Thermal energy scale.
         Outputs:
             None.
@@ -94,13 +88,10 @@ class RubiscoEpyc1Simulation:
         self.kT = float(kT)
         self.box = float(box)
         self.write_every = int(write_every)
-        self.seed = int(seed)
         self.dtype = dtype
         self._extra_capacity = int(neighbor_extra_capacity)
         self._max_capacity_retries = int(max_capacity_retries)
         self.last_neighbor_overflow = False
-        self.output_dir = None if output_dir is None else Path(output_dir)
-        self.output_name = str(output_name)
         self.n_rubisco = N_R
         self.n_patches_per_rubisco = PATCHES
         self.n_chains = N_C
@@ -159,22 +150,37 @@ class RubiscoEpyc1Simulation:
         )
         self.compiled_simulate_fn = jax.jit(self.simulate(checkpoint_blocks))
 
-    def init(self, fields: Mapping[str, Any] | None = None) -> jax.Array:
+    def init(
+        self,
+        fields: Mapping[str, Any] | None = None,
+        *,
+        positions_0: Any = None,
+        seed: int | None = None,
+    ) -> jax.Array:
         """Returns the initial particle coordinates for a simulation rollout.
 
         Inputs:
-            fields: Optional dictionary optionally containing custom 'positions_0'.
+            fields: Optional mapping optionally containing 'positions_0' or 'seed'.
+            positions_0: Optional starting coordinates array.
+            seed: Optional random seed for coordinate generation (defaults to 0).
         Outputs:
             Initial coordinate array shaped (n_particles, 3).
         """
-        fields = {} if fields is None else fields
-        if "positions_0" in fields:
-            return jnp.asarray(fields["positions_0"], dtype=self.dtype)
+        fields_dict = {} if fields is None else dict(fields)
+        if positions_0 is not None:
+            fields_dict["positions_0"] = positions_0
+        if seed is not None:
+            fields_dict["seed"] = seed
+
+        if "positions_0" in fields_dict:
+            return jnp.asarray(fields_dict["positions_0"], dtype=self.dtype)
+
+        seed_val = int(fields_dict.get("seed", 0))
         return jnp.asarray(
             generate_initial_coordinates(
                 self.box,
                 self.patch_dirs,
-                self.seed,
+                seed_val,
                 self.n_rubisco,
                 self.n_patches_per_rubisco,
                 self.n_chains,
@@ -368,7 +374,16 @@ class RubiscoEpyc1Simulation:
             "total": steric + attraction + bonded,
         }
 
-    def __call__(self, fields: Mapping[str, Any]) -> jax.Array:
+    def __call__(
+        self,
+        fields: Mapping[str, Any] | None = None,
+        *,
+        epsilon: Any = None,
+        seed: int | None = None,
+        positions_0: Any = None,
+        output_dir: str | Path | None = None,
+        output_name: str | None = None,
+    ) -> jax.Array:
         """Executes the differentiable simulation rollout and returns sampled trajectory frames.
 
         Note on gradient sign: The simulation uses -abs(epsilon) internally, so the gradient with
@@ -377,22 +392,47 @@ class RubiscoEpyc1Simulation:
         strength so that d(contacts)/d(epsilon) > 0.
 
         Inputs:
-            fields: Mapping containing required 'epsilon' and optional 'positions_0'.
+            fields: Optional mapping containing 'epsilon' and 'seed', and optional 'positions_0',
+                'output_dir', and 'output_name'.
+            epsilon: Positive sticker-patch binding strength (required if not in fields).
+            seed: Random seed for coordinate generation and thermal noise (required if not in fields).
+            positions_0: Optional starting coordinates shaped (n_particles, 3).
+            output_dir: Optional path to directory for host-side output artifacts.
+            output_name: Optional base name for generated trajectory and analysis files (defaults to 'trajectory').
         Outputs:
             Sampled trajectory array shaped (n_frames, n_particles, 3).
         """
-        epsilon = fields.get("epsilon")
-        if epsilon is None:
-            raise KeyError("JAX MD stepper requires fields['epsilon']")
-        positions = self.init(fields)
-        binding_strength = jnp.abs(jnp.asarray(epsilon, dtype=self.dtype))
-        epsilon = -binding_strength
-        key = jax.random.PRNGKey(self.seed)
+        fields_dict = {} if fields is None else dict(fields)
+        if epsilon is not None:
+            fields_dict["epsilon"] = epsilon
+        if seed is not None:
+            fields_dict["seed"] = seed
+        if positions_0 is not None:
+            fields_dict["positions_0"] = positions_0
+        if output_dir is not None:
+            fields_dict["output_dir"] = output_dir
+        if output_name is not None:
+            fields_dict["output_name"] = output_name
+
+        if "epsilon" not in fields_dict:
+            raise KeyError("JAX MD stepper requires 'epsilon'")
+        if "seed" not in fields_dict:
+            raise KeyError("JAX MD stepper requires 'seed'")
+
+        epsilon_val = fields_dict["epsilon"]
+        seed_val = int(fields_dict["seed"])
+        target_output_dir = fields_dict.get("output_dir")
+        target_output_name = str(fields_dict.get("output_name", "trajectory"))
+
+        positions = self.init(fields_dict)
+        binding_strength = jnp.abs(jnp.asarray(epsilon_val, dtype=self.dtype))
+        signed_epsilon = -binding_strength
+        key = jax.random.PRNGKey(seed_val)
         for attempt in range(self._max_capacity_retries + 1):
             neighbors = allocate_neighbors(
                 self.neighbor_fn, positions, self.box, self._extra_capacity
             )
-            frames, overflow = self.compiled_simulate_fn(positions, epsilon, key, neighbors)
+            frames, overflow = self.compiled_simulate_fn(positions, signed_epsilon, key, neighbors)
             if isinstance(overflow, jax.core.Tracer):
                 break
             self.last_neighbor_overflow = bool(overflow)
@@ -408,20 +448,35 @@ class RubiscoEpyc1Simulation:
                 stacklevel=2,
             )
 
-        if self.output_dir is not None and not isinstance(frames, jax.core.Tracer):
-            self.write_outputs(frames, binding_strength)
+        if target_output_dir is not None and not isinstance(frames, jax.core.Tracer):
+            self.write_outputs(
+                frames,
+                binding_strength,
+                output_dir=target_output_dir,
+                output_name=target_output_name,
+            )
 
         return frames
 
-    def write_outputs(self, trajectory: jax.Array, epsilon: Any) -> None:
+    def write_outputs(
+        self,
+        trajectory: jax.Array,
+        epsilon: Any,
+        output_dir: str | Path,
+        output_name: str = "trajectory",
+    ) -> None:
         """Writes host-side output files and analysis artifacts for a trajectory.
 
         Inputs:
             trajectory: Sampled rollout frames array.
             epsilon: Attraction parameter value recorded in analysis output.
+            output_dir: Target directory path for output artifacts.
+            output_name: Base name for generated trajectory and analysis files.
         Outputs:
             None.
         """
+        target_output_dir = Path(output_dir)
+        target_output_name = str(output_name)
 
         def _artifact_directories() -> dict[str, Path]:
             """Creates and returns device-specific output directories for simulation artifacts.
@@ -431,14 +486,12 @@ class RubiscoEpyc1Simulation:
             Outputs:
                 Dictionary mapping artifact names ('traj', 'xyz', 'data', 'plots') to directory Paths.
             """
-            if self.output_dir is None:
-                raise ValueError("output_dir is not configured")
             device_label = "gpu" if any(device.platform == "gpu" for device in jax.devices()) else "cpu"
             directories = {
-                "traj": self.output_dir / f"traj_jaxmd_{device_label}",
-                "xyz": self.output_dir / f"xyz_jaxmd_{device_label}",
-                "data": self.output_dir / f"data_jaxmd_{device_label}",
-                "plots": self.output_dir / f"plots_jaxmd_{device_label}",
+                "traj": target_output_dir / f"traj_jaxmd_{device_label}",
+                "xyz": target_output_dir / f"xyz_jaxmd_{device_label}",
+                "data": target_output_dir / f"data_jaxmd_{device_label}",
+                "plots": target_output_dir / f"plots_jaxmd_{device_label}",
             }
             for directory in directories.values():
                 directory.mkdir(parents=True, exist_ok=True)
@@ -446,7 +499,7 @@ class RubiscoEpyc1Simulation:
 
         directories = _artifact_directories()
         gsd_path = write_gsd(
-            path=directories["traj"] / f"{self.output_name}.gsd",
+            path=directories["traj"] / f"{target_output_name}.gsd",
             trajectory=trajectory,
             box=self.box,
             particle_type_ids=self.type_ids,
@@ -456,10 +509,10 @@ class RubiscoEpyc1Simulation:
         )
         write_analysis_outputs(
             gsd_path=gsd_path,
-            xyz_path=directories["xyz"] / f"{self.output_name}.xyz",
-            csv_path=directories["data"] / f"{self.output_name}.csv",
+            xyz_path=directories["xyz"] / f"{target_output_name}.xyz",
+            csv_path=directories["data"] / f"{target_output_name}.csv",
             plots_dir=directories["plots"],
-            output_name=self.output_name,
+            output_name=target_output_name,
             dt=self.dt,
             epsilon=float(np.asarray(epsilon)),
             n_rubisco=self.n_rubisco,

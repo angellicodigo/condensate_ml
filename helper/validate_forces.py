@@ -45,13 +45,13 @@ HOOMD_GAMMA = {"R": 5.0, "P": 5.0, "S": 1.0, "T": 1.0}
 # ---------------------------------------------------------------------------
 # JAX side
 # ---------------------------------------------------------------------------
-def make_simulation(box: float, seed: int, **kwargs):
+def make_simulation(box: float, seed: int = 0, **kwargs):
     """Construct a short JAX simulation (default: one step) for helper/test calculations."""
     from condensate_ml import RubiscoEpyc1Simulation
 
     kwargs.setdefault("n_steps", 1)
     kwargs.setdefault("write_every", 1)
-    return RubiscoEpyc1Simulation(box=box, seed=seed, **kwargs)
+    return RubiscoEpyc1Simulation(box=box, **kwargs)
 
 
 def jax_force_components(positions: np.ndarray, epsilon: float) -> dict[str, np.ndarray]:
@@ -83,7 +83,7 @@ def perturb_positions(positions: np.ndarray, sigma: float, box: float, seed: int
 
 def perturbed_positions(simulation, sigma: float, seed: int) -> np.ndarray:
     """Perturbed copy of a JAX simulation's initial layout."""
-    initial = np.asarray(simulation.init(), dtype=np.float64)
+    initial = np.asarray(simulation.init({"seed": seed}), dtype=np.float64)
     return perturb_positions(initial, sigma, simulation.box, seed)
 
 

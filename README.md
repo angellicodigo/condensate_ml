@@ -126,13 +126,12 @@ sim = RubiscoEpyc1Simulation(
     n_steps=10000,
     box=40.0,
     write_every=500,
-    seed=42,
     checkpoint_blocks=True,
 )
 
-# Run simulation with sticker-patch binding affinity epsilon = 1.2 kT
+# Run simulation with sticker-patch binding affinity epsilon = 1.2 kT and seed = 42
 epsilon = jnp.asarray(1.2, dtype=jnp.float32)
-trajectory = sim({"epsilon": epsilon})
+trajectory = sim({"epsilon": epsilon, "seed": 42})
 
 print("Trajectory shape (n_frames, n_particles, 3):", trajectory.shape)
 # Output: (21, 792, 3)
@@ -159,7 +158,7 @@ sim = RubiscoEpyc1Simulation(
 )
 
 def loss_fn(eps):
-    trajectory = sim({"epsilon": eps})
+    trajectory = sim({"epsilon": eps, "seed": 42})
     final_frame = trajectory[-1]
     # Example objective: minimize final mean-squared distance from origin
     return jnp.mean(final_frame ** 2)
