@@ -26,7 +26,7 @@ from condensate_ml.constants import (
     STICKER_INDEX,
     TYPE_INDEX,
 )
-from condensate_ml.helper import minimum_image
+from helper import minimum_image
 from condensate_ml.output import analyze_gsd, write_gsd
 
 

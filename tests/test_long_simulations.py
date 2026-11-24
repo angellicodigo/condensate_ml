@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from condensate_ml.helper.regimes import REGIMES, Regime
+from comparison import REGIMES, Regime
 
 EXPECTED_PARTICLES = 792
 

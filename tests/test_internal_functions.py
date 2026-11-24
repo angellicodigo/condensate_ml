@@ -12,7 +12,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from condensate_ml.helper import (
+from helper import (
     BOX,
     brute_force_components,
     make_simulation,
@@ -133,8 +133,8 @@ def test_pair_across_periodic_boundary_matches_brute_force():
 def test_reference_constants_match_package():
     """The HOOMD-side reference tables must not drift away from condensate_ml.constants."""
     from condensate_ml import constants as c
-    from condensate_ml.helper import validate_forces as reference
-    from condensate_ml.helper import validate_snapshot as snapshot
+    from helper import validate_forces as reference
+    from helper import validate_snapshot as snapshot
 
     assert (snapshot.N_R, snapshot.N_C, snapshot.N_BEADS, snapshot.PATCHES) == (
         c.N_R, c.N_C, c.N_BEADS, c.PATCHES)

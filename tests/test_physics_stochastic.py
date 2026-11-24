@@ -28,7 +28,7 @@ from condensate_ml.constants import (
     PATCH_TETHER_K,
     TYPE_INDEX,
 )
-from condensate_ml.helper import BOX, make_simulation, perturbed_positions
+from helper import BOX, make_simulation, perturbed_positions
 
 
 # ---------------------------------------------------------------------------

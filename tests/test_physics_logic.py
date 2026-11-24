@@ -25,7 +25,7 @@ from condensate_ml.constants import (
     STERIC_PAIR_PARAMS,
     TYPE_INDEX,
 )
-from condensate_ml.helper import BOX, make_simulation, minimum_image, perturbed_positions
+from helper import BOX, make_simulation, minimum_image, perturbed_positions
 
 
 # ---------------------------------------------------------------------------

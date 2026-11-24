@@ -1,9 +1,8 @@
-"""Shared helpers for JAX MD validation and regime runs.
+"""Shared helpers for the test suite (HOOMD reference builders, force and gradient checks).
 
-Only the lightweight, test-facing helpers are re-exported here. Plotting
-(``helper.regime_plots``) and the regime definitions / runner (``helper.regimes``)
-are imported explicitly so that ``import condensate_ml.helper`` does not pull in
-matplotlib, pandas, gsd or JAX.
+Imported by the tests as ``from helper import ...`` (``tests/`` is on ``sys.path``; see
+``[tool.pytest.ini_options]`` in ``pyproject.toml``). JAX is imported lazily by the functions that
+need it, so importing this package is cheap.
 """
 
 from .validate_snapshot import (

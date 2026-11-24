@@ -19,11 +19,12 @@ cuda12 = [
 ]
 
 [tool.setuptools]
-packages = [
-    "condensate_ml",
-    "condensate_ml.helper",
-]
+packages = ["condensate_ml"]
 
 [tool.setuptools.package-dir]
 condensate_ml = "src"
-"condensate_ml.helper" = "helper"
+
+[tool.pytest.ini_options]
+# "." lets tests import the comparison notebook (regime definitions); "tests" provides `helper`.
+pythonpath = [".", "tests"]
+testpaths = ["tests"]

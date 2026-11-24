@@ -55,21 +55,21 @@ condensate_ml/
 │   ├── neighbor_list.py          # Adapter for JAX-MD periodic cell lists & coordinates
 │   ├── initial_snapshot.py       # Deterministic initial coordinate generator
 │   └── output.py                 # GSD, XYZ trajectory writers and CSV analysis exporters
-├── helper/                       # Analysis and validation utilities
-│   ├── regime_plots.py           # Multi-regime condensation plotting helpers
-│   ├── trajectory_analysis.py    # GSD cluster detection and percolation analysis
-│   ├── validate_differentiability.py # Automated loss and finite-difference validation
-│   ├── validate_forces.py        # Force consistency benchmarks
-│   └── validate_snapshot.py      # Initial structure validation
 ├── tests/                        # Comprehensive pytest test suite
+│   ├── helper/                   # Shared test support (imported as `from helper import ...`)
+│   │   ├── validate_snapshot.py  # HOOMD reference initial-condition builder
+│   │   ├── validate_forces.py    # HOOMD force setup and independent brute-force references
+│   │   └── validate_differentiability.py # Loss and finite-difference gradient helpers
 │   ├── test_differentiable.py    # Reverse-mode autodiff tests
 │   ├── test_forces.py            # Force evaluation and HOOMD parity tests
 │   ├── test_internal_functions.py# Invariance, Newton's 3rd law, and cell list tests
 │   ├── test_initial_conditions.py# Coordinate geometry tests
 │   ├── test_long_simulations.py  # Long rollout sanity tests
-│   └── test_one_step.py          # Single-step integrator tests
-├── generate.py                   # Multi-regime simulation rollout script
-├── generate_plots.py             # Multi-regime condensation figure generator
+│   ├── test_one_step.py          # Single-step integrator tests
+│   ├── test_physics_logic.py     # Symmetry, cutoff, and exclusion logic tests
+│   ├── test_physics_stochastic.py# Noise, diffusion, and equilibrium statistics tests
+│   └── test_structural_integrity.py # Rollout integrity, cluster analysis, GSD round trip
+├── comparison.py                 # marimo notebook: runs the five regimes and writes all figures
 ├── DOCUMENTATION.md              # Detailed architecture, mathematical specs, and API guide
 ├── pyproject.toml                # Package metadata and build definitions
 └── environment.yml               # Complete Conda environment specification
@@ -173,12 +173,25 @@ print(f"Loss: {value:.4f}, dLoss/dEpsilon: {grad:.6f}")
 
 To run the five characteristic physical regimes (`control`, `early`, `nucleation`, `weak_coarsening`, `coarsening`) and generate condensation plots:
 
-```bash
-# Configure your destination directory in .env:
-# OUTPUT_DIR=/path/to/output
+`comparison.py` is a [marimo](https://marimo.io) notebook that runs all five regimes, writes the GSD/XYZ/CSV
+files and per-regime plots, then the cross-regime summary plots and (optionally) the HOOMD-versus-JAX-MD
+comparison figures. Set the destination directory in `.env` (or the environment):
 
-python generate.py
-python generate_plots.py
+```bash
+# .env
+OUTPUT_DIR=/path/to/output
+# optional: folder with the HOOMD reference plots (<regime>_{bonds,clusters,fraction,largest}.jpeg)
+plots_patchy_gpu=/path/to/hoomd/plots
+```
+
+Run it either way; the same files are written:
+
+```bash
+# Batch job (e.g. inside job.slurm): writes the files, prints progress, displays nothing
+python comparison.py
+
+# Interactive: writes the files and also displays every figure in the notebook
+marimo edit comparison.py
 ```
 
 ---
@@ -193,4 +206,7 @@ pytest tests/test_differentiable.py tests/test_internal_functions.py -v
 
 # Run all non-HOOMD tests
 pytest tests/ -k "not hoomd" -v
+
+# Skip the slow full-length (100,000-step) rollouts
+pytest tests/ --deselect tests/test_long_simulations.py
 ```

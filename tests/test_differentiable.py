@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from condensate_ml.helper import (
+from helper import (
     epsilon_value_and_gradient,
     finite_difference_epsilon_gradient,
     make_differentiability_simulation,
