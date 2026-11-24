@@ -271,6 +271,41 @@ def test_trajectory_reproducibility_across_seeds_and_checkpointing() -> None:
     assert not np.array_equal(traj_a, traj_b)
 
 
+def test_different_seeds_change_trajectory_from_identical_initial_conditions() -> None:
+    """Same starting coordinates but different seeds must give different noise, hence different paths.
+
+    The check above changes the seed *and* the generated starting layout. Here the starting
+    coordinates are passed explicitly, so the only thing that differs between the two runs is the
+    random thermal noise. The seed must therefore control the noise, and the difference between
+    the two trajectories must grow as the noise accumulates (diffusive growth).
+    """
+    n_steps, write_every, box, epsilon = 40, 10, 29.0, 1.5
+    simulation = RubiscoEpyc1Simulation(n_steps=n_steps, box=box, write_every=write_every)
+    positions_0 = np.asarray(simulation.init(seed=101))
+
+    def run(seed: int) -> np.ndarray:
+        fields = {"epsilon": epsilon, "seed": seed, "positions_0": positions_0}
+        return np.asarray(simulation(fields), dtype=np.float64)
+
+    trajectory_a, trajectory_a_repeat, trajectory_b = run(1), run(1), run(2)
+
+    # Identical start in every run: frame 0 is exactly the supplied coordinates.
+    np.testing.assert_array_equal(trajectory_a[0], positions_0)
+    np.testing.assert_array_equal(trajectory_b[0], positions_0)
+    # Same seed and same start: bitwise identical, so any difference below comes from the seed.
+    np.testing.assert_array_equal(trajectory_a, trajectory_a_repeat)
+
+    # Per-frame RMS distance between the two runs (minimum image, so box wrapping cannot fake it).
+    separation = minimum_image(trajectory_a - trajectory_b, box)
+    rms = np.sqrt(np.mean(separation**2, axis=(1, 2)))
+    assert rms[0] == 0.0
+    # After the first 10 steps the noise alone separates particles by roughly 0.06 (Rubisco) to
+    # 0.14 (chain beads); 0.02 is far above float32 rounding (~1e-6) and below the expected value.
+    assert rms[1] > 0.02, f"different seeds barely changed the trajectory (RMS {rms[1]:.2e})"
+    # Noise accumulates, so the two runs keep drifting apart.
+    assert np.all(np.diff(rms) > 0.0), f"RMS separation did not grow with time: {rms}"
+
+
 def test_simulation_init_and_call_signatures(tmp_path) -> None:
     """Verifies seed is required in __call__, output params are optional in __call__, and absent in __init__."""
     sim = RubiscoEpyc1Simulation(n_steps=10, box=40.0, write_every=5)
