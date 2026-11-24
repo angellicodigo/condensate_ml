@@ -306,6 +306,28 @@ def test_different_seeds_change_trajectory_from_identical_initial_conditions() -
     assert np.all(np.diff(rms) > 0.0), f"RMS separation did not grow with time: {rms}"
 
 
+def test_two_independent_runs_with_identical_parameters_are_identical() -> None:
+    """Two separately built simulations with the same parameters must give the same trajectory.
+
+    Unlike the repeat-run check above, each run here uses its own ``RubiscoEpyc1Simulation`` object
+    (its own topology, neighbor list and compiled rollout) and generates its own starting layout from
+    the seed, so nothing is shared between the runs except the parameters.
+    """
+    parameters = dict(n_steps=40, box=29.0, write_every=10)
+    fields = {"epsilon": 1.5, "seed": 7}
+
+    first = RubiscoEpyc1Simulation(**parameters)
+    second = RubiscoEpyc1Simulation(**parameters)
+    assert first is not second and first.compiled_simulate_fn is not second.compiled_simulate_fn
+
+    trajectory_first = np.asarray(first(fields))
+    trajectory_second = np.asarray(second(fields))
+
+    assert trajectory_first.shape == (parameters["n_steps"] // parameters["write_every"] + 1, 792, 3)
+    assert np.isfinite(trajectory_first).all()
+    np.testing.assert_array_equal(trajectory_first, trajectory_second)
+
+
 def test_simulation_init_and_call_signatures(tmp_path) -> None:
     """Verifies seed is required in __call__, output params are optional in __call__, and absent in __init__."""
     sim = RubiscoEpyc1Simulation(n_steps=10, box=40.0, write_every=5)
